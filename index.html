@@ -174,6 +174,35 @@ const isDueSoon = d => { const n = daysUntil(d); return n !== null && n >= 0 && 
 
 // ── GOOGLE CALENDAR ───────────────────────────────────────────
 const CALENDAR_FN_URL = SUPABASE_URL + '/functions/v1/calendar';
+// Helm's backend endpoint. The deployed Edge Function keeps the name
+// 'ai-chief-of-staff' (renaming it would require redeploying), but
+// everything in the app refers to the assistant as Helm.
+const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
+
+// The assistant's display name. Internal architecture stays generic;
+// this single constant drives every user-facing label, so it can be
+// changed here (or via a future settings screen) without touching anything else.
+const ASSISTANT_NAME = 'Helm';
+
+// Call Helm (the embedded assistant) with a request type.
+async function callHelm(type, extra = {}) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return { error: 'no_session' };
+  try {
+    const res = await fetch(HELM_FN_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type, ...extra }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: 'fetch_failed', detail: String(e) };
+  }
+}
 
 // Kick off Google sign-in WITH calendar scope + offline access.
 // This re-uses Supabase Auth; on return the session carries a
@@ -312,7 +341,7 @@ function Login({ onLogin }) {
   return (
     <div className="login-wrap">
       <div className="login-logo">Lovejoy OS</div>
-      <div className="login-sub">Your personal chief of staff</div>
+      <div className="login-sub">Your personal steering system</div>
       <div className="login-card">
         <div className="field">
           <label className="label">Email</label>
@@ -1205,7 +1234,7 @@ ${urgentAssets.length===0?'No upcoming asset dates.':urgentAssets.map(a=>{
 ---
 ## Prompt for AI review
 
-Please act as my personal Chief of Staff and help me with my weekly review. Using the data above:
+Please act as Helm, my calm personal steering system, and help me with my weekly review. Using the data above:
 
 1. What are the 3 most important things I should focus on this week?
 2. What is at risk of slipping that I should address today?
@@ -1290,6 +1319,145 @@ function ReviewsPage() {
       <div style={{background:' var(--surface2)',border:'1px solid var(--border)',borderRadius:8,padding:12,fontSize:11,color:'var(--muted)',lineHeight:1.7,whiteSpace:'pre-wrap',fontFamily:'monospace',maxHeight:300,overflow:'auto'}}>
         {generatePrompt()}
       </div>
+    </div>
+  );
+}
+
+// ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
+function HelmPage() {
+  const [loading, setLoading] = useState(false);
+  const [activeType, setActiveType] = useState(null);
+  const [result, setResult] = useState(null);
+  const [decisions, setDecisions] = useState([]);
+  const [pickDecision, setPickDecision] = useState(false);
+
+  useEffect(()=>{
+    supabase.from('decisions').select('id,name').eq('status','open').then(({data})=>setDecisions(data||[]));
+  },[]);
+
+  const run = async (type, extra={}) => {
+    setActiveType(type); setLoading(true); setResult(null); setPickDecision(false);
+    const r = await callHelm(type, extra);
+    setResult(r); setLoading(false);
+  };
+
+  const actions = [
+    { id:'plan_my_day',           label:'Plan My Day',          icon:'⚡', desc:'What to do today, around your calendar' },
+    { id:'weekly_review',         label:'Weekly Review',         icon:'📋', desc:'Step back: what is slipping, what needs deciding' },
+    { id:'pressure_test_decision',label:'Pressure Test Decision',icon:'🤔', desc:'Sharpen your thinking on an open decision' },
+    { id:'tidy_my_system',        label:'Tidy My System',        icon:'🧹', desc:'Find stale projects and clutter to clear' },
+  ];
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>{ASSISTANT_NAME}</h1>
+      <div className="meta" style={{marginBottom:16}}>Your calm steering system. {ASSISTANT_NAME} reads your world, tells you what matters, and points you at what's next.</div>
+
+      <div style={{fontSize:13,fontWeight:600,color:'var(--muted)',marginBottom:8}}>Ask {ASSISTANT_NAME}</div>
+
+      {/* Action buttons */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
+        {actions.map(a=>(
+          <button key={a.id}
+            className="card"
+            style={{cursor:'pointer',textAlign:'left',border:activeType===a.id?'1px solid var(--accent)':'1px solid var(--border)',background:activeType===a.id?'rgba(79,124,255,0.08)':'var(--surface)'}}
+            onClick={()=>{
+              if (a.id==='pressure_test_decision') { setActiveType(a.id); setPickDecision(true); setResult(null); }
+              else run(a.id);
+            }}
+            disabled={loading}>
+            <div style={{fontSize:20,marginBottom:6}}>{a.icon}</div>
+            <div className="name" style={{fontSize:13,marginBottom:2}}>{a.label}</div>
+            <div className="meta" style={{fontSize:11}}>{a.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* Decision picker for pressure test */}
+      {pickDecision && (
+        <div className="card" style={{marginBottom:16}}>
+          <div className="label" style={{marginBottom:8}}>Which decision should I pressure-test?</div>
+          {decisions.length===0 && <div className="meta">No open decisions to test.</div>}
+          {decisions.map(d=>(
+            <button key={d.id} className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'flex-start',marginBottom:6}}
+              onClick={()=>run('pressure_test_decision',{decisionId:d.id})}>
+              {d.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="card" style={{textAlign:'center',padding:'28px'}}>
+          <div className="spinner" style={{margin:'0 auto 12px'}}/>
+          <div className="meta">{ASSISTANT_NAME} is thinking through your system…</div>
+        </div>
+      )}
+
+      {/* Error states */}
+      {result?.error === 'missing_key' && (
+        <div className="card"><div className="name" style={{marginBottom:4}}>AI not configured</div><div className="meta">The Anthropic API key hasn't been added yet. Add it in Supabase secrets as ANTHROPIC_API_KEY.</div></div>
+      )}
+      {result?.error === 'ai_call_failed' && (
+        <div className="card"><div className="name" style={{marginBottom:4}}>AI call failed</div><div className="meta" style={{wordBreak:'break-word'}}>{String(result.detail).slice(0,300)}</div></div>
+      )}
+      {result?.error && !['missing_key','ai_call_failed'].includes(result.error) && (
+        <div className="card"><div className="name" style={{marginBottom:4}}>Something went wrong</div><div className="meta">{result.message || result.error}</div></div>
+      )}
+
+      {/* Structured result */}
+      {result && !result.error && (
+        <div>
+          {result.summary && (
+            <div className="card" style={{marginBottom:10}}>
+              <div className="section-title" style={{marginTop:0}}>Summary</div>
+              <div style={{fontSize:14,lineHeight:1.55}}>{result.summary}</div>
+            </div>
+          )}
+
+          {result.attention?.length>0 && (
+            <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--amber)'}}>
+              <div className="section-title" style={{marginTop:0}}>What needs attention</div>
+              {result.attention.map((a,i)=><div key={i} style={{fontSize:13,lineHeight:1.5,marginBottom:6,display:'flex',gap:8}}><span style={{color:'var(--amber)'}}>•</span><span>{a}</span></div>)}
+            </div>
+          )}
+
+          {result.next_actions?.length>0 && (
+            <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent)'}}>
+              <div className="section-title" style={{marginTop:0}}>Recommended next actions</div>
+              {result.next_actions.map((a,i)=><div key={i} style={{fontSize:13,lineHeight:1.5,marginBottom:6,display:'flex',gap:8}}><span style={{color:'var(--accent)'}}>{i+1}.</span><span>{a}</span></div>)}
+            </div>
+          )}
+
+          {result.proposed_changes?.length>0 && (
+            <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)'}}>
+              <div className="section-title" style={{marginTop:0}}>Proposed by {ASSISTANT_NAME}</div>
+              <div className="meta" style={{marginBottom:8}}>{ASSISTANT_NAME} suggests these. Nothing changes automatically — an approval step is coming in the next build.</div>
+              {result.proposed_changes.map((c,i)=>(
+                <div key={i} className="card-sm" style={{background:'var(--surface2)'}}>
+                  <div className="row" style={{gap:6,marginBottom:2}}>
+                    <span className="pill pill-purple">{(c.type||'change').replace(/_/g,' ')}</span>
+                  </div>
+                  <div style={{fontSize:13}}>{c.name || c.title || c.rationale || JSON.stringify(c)}</div>
+                  {c.rationale && (c.name||c.title) && <div className="meta" style={{marginTop:2}}>{c.rationale}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {result.flags?.length>0 && (
+            <div className="card" style={{marginBottom:10,background:'rgba(239,68,68,0.06)',border:'1px solid rgba(239,68,68,0.2)'}}>
+              <div className="section-title" style={{marginTop:0,color:'var(--red)'}}>Flags</div>
+              {result.flags.map((f,i)=><div key={i} style={{fontSize:13,lineHeight:1.5,marginBottom:4}}>⚠ {f}</div>)}
+            </div>
+          )}
+
+          <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={()=>{setResult(null);setActiveType(null);}}>
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1701,15 +1869,17 @@ function App() {
   if (!user) return <Login onLogin={setUser}/>;
 
   const navItems = [
-    { id:'dashboard', label:'Dashboard', icon:'home' },
-    { id:'projects',  label:'Projects',  icon:'folder' },
-    { id:'tasks',     label:'Tasks',     icon:'check' },
-    { id:'capture',   label:'Capture',   icon:'zap' },
-    { id:'more',      label:'More',      icon:'layers' },
+    { id:'dashboard', label:'Dashboard',     icon:'home' },
+    { id:'helm',       label:ASSISTANT_NAME,  icon:'zap' },
+    { id:'tasks',     label:'Tasks',         icon:'check' },
+    { id:'capture',   label:'Capture',       icon:'plus' },
+    { id:'more',      label:'More',          icon:'layers' },
   ];
 
   const moreItems = [
+    { id:'helm',       label:ASSISTANT_NAME, icon:'zap' },
     { id:'calendar',  label:'Calendar', icon:'clock' },
+    { id:'projects',  label:'Projects', icon:'folder' },
     { id:'areas',     label:'Areas & Roles', icon:'layers' },
     { id:'decisions', label:'Decisions & Assets', icon:'box' },
     { id:'reviews',   label:'Weekly Review', icon:'clock' },
@@ -1717,6 +1887,7 @@ function App() {
 
   const renderPage = () => {
     if (page==='dashboard') return <DashboardPage user={user} onNavigate={setPage}/>;
+    if (page==='helm')       return <HelmPage/>;
     if (page==='projects')  return <ProjectsPage/>;
     if (page==='tasks')     return <TasksPage/>;
     if (page==='capture')   return <QuickCapturePage/>;
@@ -1753,7 +1924,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -1762,7 +1933,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['calendar','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['calendar','projects','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
