@@ -172,6 +172,129 @@ const daysUntil = d => {
 const isOverdue = d => d && daysUntil(d) < 0;
 const isDueSoon = d => { const n = daysUntil(d); return n !== null && n >= 0 && n <= 30; };
 
+// ── GOOGLE CALENDAR ───────────────────────────────────────────
+const CALENDAR_FN_URL = SUPABASE_URL + '/functions/v1/calendar';
+
+// Kick off Google sign-in WITH calendar scope + offline access.
+// This re-uses Supabase Auth; on return the session carries a
+// provider_token + provider_refresh_token we hand to the Edge Function.
+async function connectGoogleCalendar() {
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      scopes: 'https://www.googleapis.com/auth/calendar.readonly',
+      queryParams: { access_type: 'offline', prompt: 'consent' },
+      redirectTo: window.location.href.split('#')[0],
+    },
+  });
+  if (error) console.error('Google connect error', error);
+}
+
+// After an OAuth return, store the Google refresh token via the Edge Function.
+async function storeGoogleToken(session) {
+  if (!session?.provider_refresh_token && !session?.provider_token) return;
+  try {
+    await fetch(CALENDAR_FN_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        provider_token: session.provider_token,
+        provider_refresh_token: session.provider_refresh_token,
+        scope: 'calendar.readonly',
+      }),
+    });
+  } catch (e) { console.error('storeGoogleToken failed', e); }
+}
+
+// Fetch events for the next `daysAhead` days from the Edge Function.
+async function fetchCalendarEvents(daysAhead = 7) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return { error: 'no_session' };
+  try {
+    const res = await fetch(CALENDAR_FN_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ daysAhead }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: 'fetch_failed', detail: String(e) };
+  }
+}
+
+// Event time formatting
+const fmtTime = iso => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+};
+const fmtDayLabel = d => {
+  const date = new Date(d);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cmp = new Date(date); cmp.setHours(0,0,0,0);
+  const diff = Math.round((cmp - today) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
+};
+// Group events by calendar day (YYYY-MM-DD)
+function groupEventsByDay(events) {
+  const groups = {};
+  events.forEach(e => {
+    const key = (e.start || '').split('T')[0];
+    if (!key) return;
+    (groups[key] = groups[key] || []).push(e);
+  });
+  return groups;
+}
+// Find free gaps in a day's timed events, within working hours.
+function findGaps(dayEvents, dayKey, workStart = 8, workEnd = 22, minGapMins = 30) {
+  const timed = dayEvents
+    .filter(e => !e.allDay && e.start && e.end)
+    .map(e => ({ start: new Date(e.start), end: new Date(e.end) }))
+    .sort((a, b) => a.start - b.start);
+  const dayStart = new Date(dayKey + 'T00:00:00'); dayStart.setHours(workStart, 0, 0, 0);
+  const dayEnd = new Date(dayKey + 'T00:00:00'); dayEnd.setHours(workEnd, 0, 0, 0);
+  const gaps = [];
+  let cursor = new Date(dayStart);
+  // Don't suggest gaps in the past for today
+  const now = new Date();
+  if (cursor < now && dayKey === now.toISOString().split('T')[0]) cursor = new Date(now);
+  timed.forEach(ev => {
+    if (ev.start > cursor) {
+      const mins = (ev.start - cursor) / 60000;
+      if (mins >= minGapMins) gaps.push({ start: new Date(cursor), end: new Date(ev.start), mins });
+    }
+    if (ev.end > cursor) cursor = new Date(ev.end);
+  });
+  if (dayEnd > cursor) {
+    const mins = (dayEnd - cursor) / 60000;
+    if (mins >= minGapMins) gaps.push({ start: new Date(cursor), end: new Date(dayEnd), mins });
+  }
+  return gaps;
+}
+// Classify a day's load
+function classifyDay(dayEvents) {
+  const timed = dayEvents.filter(e => !e.allDay);
+  const totalMins = timed.reduce((sum, e) => {
+    if (e.start && e.end) return sum + (new Date(e.end) - new Date(e.start)) / 60000;
+    return sum;
+  }, 0);
+  const hours = totalMins / 60;
+  if (timed.length === 0) return { label: 'Empty', tone: 'green', hours };
+  if (hours >= 6 || timed.length >= 6) return { label: 'Overloaded', tone: 'red', hours };
+  if (hours >= 3 || timed.length >= 3) return { label: 'Busy', tone: 'amber', hours };
+  return { label: 'Light', tone: 'blue', hours };
+}
+
 // ── LOGIN ─────────────────────────────────────────────────────
 function Login({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -203,6 +326,17 @@ function Login({ onLogin }) {
         <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={handleLogin} disabled={loading}>
           {loading ? 'Signing in…' : 'Sign in'}
         </button>
+        <div style={{display:'flex',alignItems:'center',gap:10,margin:'16px 0'}}>
+          <div style={{flex:1,height:1,background:'var(--border)'}}/>
+          <span style={{fontSize:11,color:'var(--muted)'}}>or</span>
+          <div style={{flex:1,height:1,background:'var(--border)'}}/>
+        </div>
+        <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center'}} onClick={connectGoogleCalendar}>
+          Continue with Google
+        </button>
+        <div style={{fontSize:11,color:'var(--muted)',marginTop:10,textAlign:'center',lineHeight:1.5}}>
+          Signing in with Google also connects your calendar (read-only).
+        </div>
       </div>
     </div>
   );
@@ -1160,6 +1294,160 @@ function ReviewsPage() {
   );
 }
 
+// ── CALENDAR PAGE (Phases 1, 2, 3) ────────────────────────────
+function CalendarPage() {
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('today'); // today | week | gaps
+  const [tasks, setTasks] = useState([]);
+
+  const load = async () => {
+    setLoading(true);
+    const [r, t] = await Promise.all([
+      fetchCalendarEvents(7),
+      supabase.from('tasks').select('*').eq('is_next_action', true).neq('status','done').neq('status','cancelled'),
+    ]);
+    setResult(r);
+    setTasks(t.data || []);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
+  // Not connected / error states
+  if (result?.error === 'no_google_connection' || result?.error === 'token_refresh_failed') {
+    return (
+      <div className="page">
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:8}}>Calendar</h1>
+        <div className="card" style={{textAlign:'center',padding:'28px 16px'}}>
+          <div style={{fontSize:32,marginBottom:10}}>📅</div>
+          <div className="name" style={{marginBottom:6}}>Calendar not connected</div>
+          <div className="meta" style={{marginBottom:16}}>Connect your Google Calendar to see today's events, your week ahead, and free gaps for scheduling.</div>
+          <button className="btn btn-primary" style={{justifyContent:'center'}} onClick={connectGoogleCalendar}>Connect Google Calendar</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (result?.error) {
+    return (
+      <div className="page">
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:8}}>Calendar</h1>
+        <div className="card">
+          <div className="name" style={{marginBottom:6}}>Couldn't load calendar</div>
+          <div className="meta" style={{marginBottom:12}}>{result.message || result.detail || 'Something went wrong fetching your events.'}</div>
+          <button className="btn btn-ghost btn-sm" onClick={load}>Try again</button>
+        </div>
+      </div>
+    );
+  }
+
+  const events = result?.events || [];
+  const byDay = groupEventsByDay(events);
+  const todayKey = new Date().toISOString().split('T')[0];
+  const todayEvents = (byDay[todayKey] || []).sort((a,b)=> (a.start||'').localeCompare(b.start||''));
+
+  // Build 7-day ordered list of day keys
+  const dayKeys = [];
+  for (let i=0;i<7;i++){ const d=new Date(); d.setDate(d.getDate()+i); dayKeys.push(d.toISOString().split('T')[0]); }
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:12}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Calendar</h1>
+        <button className="btn btn-ghost btn-sm btn-icon" onClick={load} title="Refresh">↻</button>
+      </div>
+
+      <div style={{display:'flex',gap:6,marginBottom:16}}>
+        <button className={`qc-type-btn ${view==='today'?'active':''}`} onClick={()=>setView('today')}>Today</button>
+        <button className={`qc-type-btn ${view==='week'?'active':''}`} onClick={()=>setView('week')}>Next 7 days</button>
+        <button className={`qc-type-btn ${view==='gaps'?'active':''}`} onClick={()=>setView('gaps')}>Free time</button>
+      </div>
+
+      {/* ── TODAY (Phase 1) ── */}
+      {view==='today' && (
+        <>
+          {todayEvents.length===0 && <div className="empty"><div className="empty-icon">☀️</div>Nothing scheduled today</div>}
+          {todayEvents.map(e=>(
+            <div key={e.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
+              <div className="row-between">
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="name" style={{fontSize:13}}>{e.title}</div>
+                  <div className="meta">
+                    {e.allDay ? 'All day' : `${fmtTime(e.start)} – ${fmtTime(e.end)}`}
+                    {e.location ? ` · 📍 ${e.location}` : ''}
+                  </div>
+                  {e.hangoutLink && <div className="meta" style={{color:'var(--accent)'}}>Video call</div>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* ── NEXT 7 DAYS (Phase 2) ── */}
+      {view==='week' && dayKeys.map(key=>{
+        const dayEvents = (byDay[key]||[]).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+        const cls = classifyDay(dayEvents);
+        return (
+          <div key={key} style={{marginBottom:14}}>
+            <div className="row-between" style={{marginBottom:6}}>
+              <div className="section-title" style={{margin:0}}>{fmtDayLabel(key)}</div>
+              <span className={`pill pill-${cls.tone==='green'?'green':cls.tone==='red'?'red':cls.tone==='amber'?'amber':'blue'}`}>{cls.label}</span>
+            </div>
+            {dayEvents.length===0 && <div className="card-sm" style={{opacity:0.6}}><div className="meta">No events</div></div>}
+            {dayEvents.map(e=>(
+              <div key={e.id} className="card-sm">
+                <div className="name" style={{fontSize:13}}>{e.title}</div>
+                <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {/* ── FREE TIME / GAPS (Phase 3) ── */}
+      {view==='gaps' && (
+        <>
+          <div className="meta" style={{marginBottom:12}}>Free blocks in your day (8am–10pm) where you could schedule focused work. Pulls from your open next actions.</div>
+          {dayKeys.map(key=>{
+            const dayEvents = byDay[key]||[];
+            const gaps = findGaps(dayEvents, key);
+            if (gaps.length===0) return null;
+            const nextActions = (tasks||[]).filter(t=>t.is_next_action).slice(0,3);
+            return (
+              <div key={key} style={{marginBottom:16}}>
+                <div className="section-title">{fmtDayLabel(key)}</div>
+                {gaps.map((g,i)=>{
+                  const hrs = Math.floor(g.mins/60), mins = Math.round(g.mins%60);
+                  const dur = `${hrs>0?`${hrs}h `:''}${mins>0?`${mins}m`:''}`.trim();
+                  const suggestion = nextActions[i % Math.max(nextActions.length,1)];
+                  return (
+                    <div key={i} className="card-sm" style={{borderLeft:'3px solid var(--green)'}}>
+                      <div className="row-between">
+                        <div style={{flex:1}}>
+                          <div className="name" style={{fontSize:13}}>{fmtTime(g.start)} – {fmtTime(g.end)} · {dur} free</div>
+                          {suggestion
+                            ? <div className="meta">Could tackle: <span style={{color:'var(--text)'}}>{suggestion.name}</span></div>
+                            : <div className="meta">No next actions flagged to suggest</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {dayKeys.every(key=>findGaps(byDay[key]||[], key).length===0) && (
+            <div className="empty"><div className="empty-icon">🗓️</div>No sizeable free gaps in the next 7 days</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── ATTENTION ENGINE ──────────────────────────────────────────
 // Pure function: takes system data, returns a ranked list of
 // items that need attention, most urgent first.
@@ -1260,6 +1548,8 @@ function DashboardPage({ user, onNavigate }) {
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [todayEvents, setTodayEvents] = useState([]);
+  const [calState, setCalState] = useState(null); // null | 'ok' | error code
 
   const load = async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -1272,6 +1562,14 @@ function DashboardPage({ user, onNavigate }) {
     ]);
     setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
     setLoading(false);
+    // Calendar loads separately so a slow/absent calendar never blocks the dashboard
+    fetchCalendarEvents(1).then(r=>{
+      if (r && r.events) {
+        const todayKey = new Date().toISOString().split('T')[0];
+        setTodayEvents(r.events.filter(e=>(e.start||'').startsWith(todayKey)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
+      }
+      setCalState(r?.error || 'ok');
+    });
   };
   useEffect(()=>{ load(); },[]);
 
@@ -1296,6 +1594,36 @@ function DashboardPage({ user, onNavigate }) {
         <div style={{fontSize:13,color:'var(--muted)'}}>{greeting}</div>
         <div style={{fontSize:22,fontWeight:700,letterSpacing:'-0.5px'}}>Freddie</div>
       </div>
+
+      {/* Today's calendar (Phase 1) — leads the day with real context */}
+      {calState === 'no_google_connection' ? (
+        <div className="card" style={{marginBottom:18,background:'rgba(79,124,255,0.05)',border:'1px solid rgba(79,124,255,0.2)'}}>
+          <div className="row-between">
+            <div style={{flex:1}}>
+              <div className="name" style={{fontSize:13,marginBottom:2}}>📅 Connect your calendar</div>
+              <div className="meta">See today's events and free time here.</div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={connectGoogleCalendar}>Connect</button>
+          </div>
+        </div>
+      ) : todayEvents.length > 0 ? (
+        <div style={{marginBottom:18}}>
+          <div className="section-title" style={{marginTop:0}}>Today's schedule</div>
+          {todayEvents.map(e=>(
+            <div key={e.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
+              <div className="name" style={{fontSize:13}}>{e.title}</div>
+              <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
+            </div>
+          ))}
+          <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={()=>onNavigate('calendar')}>
+            View week →
+          </button>
+        </div>
+      ) : calState === 'ok' ? (
+        <div className="card-sm" style={{marginBottom:18,opacity:0.7}}>
+          <div className="meta">☀️ Nothing scheduled today</div>
+        </div>
+      ) : null}
 
       {/* Weekly review button */}
       <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',marginBottom:18,padding:'11px'}} onClick={copyReview}>
@@ -1359,9 +1687,12 @@ function App() {
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{
       setUser(session?.user||null); setChecking(false);
+      if (session?.provider_refresh_token) storeGoogleToken(session);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_,session)=>{
       setUser(session?.user||null);
+      // When Google returns with a fresh provider refresh token, persist it
+      if (session?.provider_refresh_token) storeGoogleToken(session);
     });
     return ()=>subscription.unsubscribe();
   },[]);
@@ -1378,6 +1709,7 @@ function App() {
   ];
 
   const moreItems = [
+    { id:'calendar',  label:'Calendar', icon:'clock' },
     { id:'areas',     label:'Areas & Roles', icon:'layers' },
     { id:'decisions', label:'Decisions & Assets', icon:'box' },
     { id:'reviews',   label:'Weekly Review', icon:'clock' },
@@ -1388,6 +1720,7 @@ function App() {
     if (page==='projects')  return <ProjectsPage/>;
     if (page==='tasks')     return <TasksPage/>;
     if (page==='capture')   return <QuickCapturePage/>;
+    if (page==='calendar')  return <CalendarPage/>;
     if (page==='areas')     return <AreasPage/>;
     if (page==='decisions') return <DecisionsAssetsPage/>;
     if (page==='reviews')   return <ReviewsPage/>;
@@ -1420,7 +1753,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
+          {page==='dashboard'?'Dashboard':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -1429,7 +1762,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['calendar','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
