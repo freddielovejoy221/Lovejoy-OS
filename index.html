@@ -184,6 +184,38 @@ const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
 // changed here (or via a future settings screen) without touching anything else.
 const ASSISTANT_NAME = 'Helm';
 
+// ── HELM SETTINGS ─────────────────────────────────────────────
+const DEFAULT_HELM_SETTINGS = {
+  tone: 'direct',
+  planning_style: 'balanced',
+  default_energy: 'medium',
+  workload_bias: 'balance',
+  work_start: '08:00',
+  work_end: '18:00',
+  evening_cutoff: '21:00',
+  weekend_behaviour: 'light_personal',
+  calendar_target: 'shared',
+  allow_focus_blocks: true,
+  allow_travel_buffers: true,
+  allow_workout_blocks: true,
+  allow_admin_blocks: true,
+  suggestion_strictness: 'free',
+  priority_ranking: ['health','work','freelance','finance','home','relationships','travel','rest'],
+};
+
+async function loadHelmSettings() {
+  const { data } = await supabase.from('helm_settings').select('*').maybeSingle();
+  return data ? { ...DEFAULT_HELM_SETTINGS, ...data } : { ...DEFAULT_HELM_SETTINGS };
+}
+
+async function saveHelmSettings(settings) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'no_user' };
+  const row = { ...settings, user_id: user.id };
+  delete row.id; delete row.created_at; delete row.updated_at;
+  return await supabase.from('helm_settings').upsert(row, { onConflict: 'user_id' });
+}
+
 // Call Helm (the embedded assistant) with a request type.
 async function callHelm(type, extra = {}) {
   const { data: { session } } = await supabase.auth.getSession();
@@ -211,7 +243,7 @@ async function connectGoogleCalendar() {
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      scopes: 'https://www.googleapis.com/auth/calendar.readonly',
+      scopes: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.app.created',
       queryParams: { access_type: 'offline', prompt: 'consent' },
       redirectTo: window.location.href.split('#')[0],
     },
@@ -1323,6 +1355,133 @@ function ReviewsPage() {
   );
 }
 
+// ── HELM SETTINGS PAGE ────────────────────────────────────────
+function HelmSettingsPage() {
+  const [s, setS] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(()=>{ loadHelmSettings().then(v=>{ setS(v); setLoading(false); }); },[]);
+
+  const upd = (k,v) => { setS(p=>({...p,[k]:v})); setSaved(false); };
+
+  const save = async () => {
+    await saveHelmSettings(s);
+    setSaved(true);
+    setTimeout(()=>setSaved(false), 2500);
+  };
+
+  const movePriority = (i, dir) => {
+    const arr = [...s.priority_ranking];
+    const j = i + dir;
+    if (j < 0 || j >= arr.length) return;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    upd('priority_ranking', arr);
+  };
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
+  const Segmented = ({label, k, options}) => (
+    <div className="field">
+      <label className="label">{label}</label>
+      <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+        {options.map(o=>(
+          <button key={o.v} className={`qc-type-btn ${s[k]===o.v?'active':''}`} onClick={()=>upd(k,o.v)}>{o.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const Toggle = ({label, k}) => (
+    <div className="row-between" style={{padding:'8px 0'}}>
+      <span style={{fontSize:13}}>{label}</span>
+      <button
+        onClick={()=>upd(k,!s[k])}
+        style={{width:44,height:26,borderRadius:13,border:'none',cursor:'pointer',background:s[k]?'var(--accent)':'var(--border)',position:'relative',transition:'background 0.15s'}}>
+        <span style={{position:'absolute',top:3,left:s[k]?21:3,width:20,height:20,borderRadius:'50%',background:'white',transition:'left 0.15s'}}/>
+      </button>
+    </div>
+  );
+
+  const priorityLabels = {health:'Health',work:'Work',freelance:'Freelance',finance:'Finance',home:'Home',relationships:'Relationships',travel:'Travel',rest:'Rest / recovery'};
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>{ASSISTANT_NAME} Settings</h1>
+      <div className="meta" style={{marginBottom:16}}>Tune how {ASSISTANT_NAME} behaves. These shape every plan, review and suggestion.</div>
+
+      <div className="card">
+        <div className="section-title" style={{marginTop:0}}>How {ASSISTANT_NAME} talks</div>
+        <Segmented label="Tone" k="tone" options={[
+          {v:'direct',label:'Direct'},{v:'gentle',label:'Gentle'},{v:'coaching',label:'Coaching'},{v:'ruthless_constructive',label:'Ruthless but constructive'},
+        ]}/>
+        <Segmented label="Planning style" k="planning_style" options={[
+          {v:'light',label:'Light touch'},{v:'balanced',label:'Balanced'},{v:'detailed',label:'Detailed'},{v:'ruthless',label:'Ruthless prioritisation'},
+        ]}/>
+        <Segmented label="Suggestion strictness" k="suggestion_strictness" options={[
+          {v:'free',label:'Suggest freely'},{v:'high_confidence',label:'High-confidence only'},{v:'ask_major',label:'Ask before major changes'},
+        ]}/>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{marginTop:0}}>How {ASSISTANT_NAME} plans</div>
+        <Segmented label="Default energy assumption" k="default_energy" options={[
+          {v:'high',label:'High'},{v:'medium',label:'Medium'},{v:'low',label:'Low'},{v:'ask',label:'Ask each time'},
+        ]}/>
+        <Segmented label="Workload bias" k="workload_bias" options={[
+          {v:'protect_recovery',label:'Protect recovery'},{v:'maximise',label:'Maximise productivity'},{v:'balance',label:'Balance work & life'},{v:'urgent_only',label:'Urgent only'},
+        ]}/>
+        <Segmented label="Weekend behaviour" k="weekend_behaviour" options={[
+          {v:'none',label:'No weekend tasks'},{v:'light_personal',label:'Light personal only'},{v:'all',label:'Allow all'},{v:'ask',label:'Ask each time'},
+        ]}/>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{marginTop:0}}>Working hours</div>
+        <div className="row" style={{gap:8}}>
+          <div className="field" style={{flex:1,marginBottom:0}}><label className="label">Start</label><input className="input" type="time" value={s.work_start} onChange={e=>upd('work_start',e.target.value)}/></div>
+          <div className="field" style={{flex:1,marginBottom:0}}><label className="label">End</label><input className="input" type="time" value={s.work_end} onChange={e=>upd('work_end',e.target.value)}/></div>
+          <div className="field" style={{flex:1,marginBottom:0}}><label className="label">Evening cut-off</label><input className="input" type="time" value={s.evening_cutoff} onChange={e=>upd('evening_cutoff',e.target.value)}/></div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{marginTop:0}}>Calendar behaviour</div>
+        <Segmented label="Calendar for Helm-created blocks" k="calendar_target" options={[
+          {v:'shared',label:'Shared calendar'},{v:'primary',label:'My primary'},
+        ]}/>
+        <div style={{marginTop:4}}>
+          <Toggle label="Allow focus blocks" k="allow_focus_blocks"/>
+          <Toggle label="Allow travel buffers" k="allow_travel_buffers"/>
+          <Toggle label="Allow workout blocks" k="allow_workout_blocks"/>
+          <Toggle label="Allow admin blocks" k="allow_admin_blocks"/>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{marginTop:0}}>Personal priorities</div>
+        <div className="meta" style={{marginBottom:10}}>Rank what matters most. {ASSISTANT_NAME} weights its advice toward the top.</div>
+        {s.priority_ranking.map((key,i)=>(
+          <div key={key} className="card-sm" style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+            <div className="row" style={{gap:8}}>
+              <span style={{fontSize:11,color:'var(--muted)',width:18}}>{i+1}.</span>
+              <span style={{fontSize:13}}>{priorityLabels[key]||key}</span>
+            </div>
+            <div className="row" style={{gap:4}}>
+              <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>movePriority(i,-1)} disabled={i===0} style={{opacity:i===0?0.3:1}}>↑</button>
+              <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>movePriority(i,1)} disabled={i===s.priority_ranking.length-1} style={{opacity:i===s.priority_ranking.length-1?0.3:1}}>↓</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',padding:'12px',marginTop:4}} onClick={save}>
+        {saved ? '✓ Settings saved' : 'Save settings'}
+      </button>
+    </div>
+  );
+}
+
 // ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
 function HelmPage() {
   const [loading, setLoading] = useState(false);
@@ -1878,6 +2037,7 @@ function App() {
 
   const moreItems = [
     { id:'helm',       label:ASSISTANT_NAME, icon:'zap' },
+    { id:'helmsettings', label:ASSISTANT_NAME+' Settings', icon:'box' },
     { id:'calendar',  label:'Calendar', icon:'clock' },
     { id:'projects',  label:'Projects', icon:'folder' },
     { id:'areas',     label:'Areas & Roles', icon:'layers' },
@@ -1888,6 +2048,7 @@ function App() {
   const renderPage = () => {
     if (page==='dashboard') return <DashboardPage user={user} onNavigate={setPage}/>;
     if (page==='helm')       return <HelmPage/>;
+    if (page==='helmsettings') return <HelmSettingsPage/>;
     if (page==='projects')  return <ProjectsPage/>;
     if (page==='tasks')     return <TasksPage/>;
     if (page==='capture')   return <QuickCapturePage/>;
@@ -1924,7 +2085,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -1933,7 +2094,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['calendar','projects','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
