@@ -216,6 +216,105 @@ async function saveHelmSettings(settings) {
   return await supabase.from('helm_settings').upsert(row, { onConflict: 'user_id' });
 }
 
+// ── PROPOSED ACTIONS: log + apply on approval ─────────────────
+// Records a proposal (and its outcome) in proposed_actions for the audit trail.
+async function logProposal({ action_type, explanation, payload, status, final_payload, result_ref, result_note, source_request }) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data } = await supabase.from('proposed_actions').insert({
+    user_id: user.id,
+    action_type, explanation, payload,
+    final_payload: final_payload || null,
+    status,
+    result_ref: result_ref || null,
+    result_note: result_note || null,
+    source_request: source_request || null,
+    resolved_at: status === 'pending' ? null : new Date().toISOString(),
+  }).select().single();
+  return data;
+}
+
+// Applies an approved action to the real tables. Returns { ok, ref, note }.
+// This is the ONLY place writes happen — and only ever on explicit approval.
+async function applyProposedAction(type, p) {
+  try {
+    if (type === 'create_task') {
+      const { data, error } = await supabase.from('tasks').insert({
+        name: p.name,
+        priority: p.priority || 'medium',
+        due_date: p.due_date || null,
+        project_id: p.project_id || null,
+        area_id: p.area_id || null,
+        notes: p.notes || null,
+        status: 'todo',
+        is_next_action: !!p.is_next_action,
+      }).select().single();
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:data.id };
+    }
+
+    if (type === 'update_project_next_action') {
+      // Clear any existing next-action flag on this project so there's a single clear next action
+      await supabase.from('tasks').update({ is_next_action: false }).eq('project_id', p.project_id).eq('is_next_action', true);
+      // Create the new task flagged as the project's next action
+      const { data, error } = await supabase.from('tasks').insert({
+        name: p.task_name || p.name,
+        project_id: p.project_id,
+        priority: p.priority || 'medium',
+        due_date: p.due_date || null,
+        status: 'todo',
+        is_next_action: true,
+      }).select().single();
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:data.id };
+    }
+
+    if (type === 'update_task_priority') {
+      const { error } = await supabase.from('tasks').update({ priority: p.priority }).eq('id', p.task_id);
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:p.task_id };
+    }
+
+    if (type === 'create_waiting_for') {
+      const { data, error } = await supabase.from('waiting_for').insert({
+        name: p.name,
+        waiting_on: p.waiting_on || null,
+        due_date: p.due_date || null,
+        area_id: p.area_id || null,
+        status: 'open',
+      }).select().single();
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:data.id };
+    }
+
+    if (type === 'update_decision_status') {
+      const { error } = await supabase.from('decisions').update({
+        status: p.status,
+        outcome: p.outcome || null,
+        decided_at: p.status === 'decided' ? new Date().toISOString() : null,
+      }).eq('id', p.decision_id);
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:p.decision_id };
+    }
+
+    if (type === 'archive_project') {
+      // Archive, never delete (Part 6 safe defaults)
+      const { error } = await supabase.from('projects').update({ status: 'archived' }).eq('id', p.project_id);
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:p.project_id };
+    }
+
+    if (type === 'create_calendar_block') {
+      // Calendar write comes in Deploy 3 via the calendar function.
+      return { ok:false, note:'Calendar blocks activate in the next build.' };
+    }
+
+    return { ok:false, note:'Unknown action type' };
+  } catch (e) {
+    return { ok:false, note:String(e) };
+  }
+}
+
 // Call Helm (the embedded assistant) with a request type.
 async function callHelm(type, extra = {}) {
   const { data: { session } } = await supabase.auth.getSession();
@@ -1482,6 +1581,131 @@ function HelmSettingsPage() {
   );
 }
 
+// ── PROPOSED ACTIONS (approve / reject / edit) ────────────────
+// Each proposal is its own card. Nothing writes until Approve is
+// tapped. Edit lets you change details first. Every outcome is
+// logged to proposed_actions (the audit trail).
+function ProposedActions({ changes, sourceRequest }) {
+  // status per card: 'pending' | 'approved' | 'rejected' | 'failed'
+  const [states, setStates] = useState(() => changes.map(c => ({ status:'pending', edited:{...c}, editing:false, note:'' })));
+
+  // Human-readable description of what a change will do
+  const describe = (c) => {
+    switch (c.type) {
+      case 'create_task': return `Create a task: "${c.name}"`;
+      case 'update_project_next_action': return `Set next action on a project: "${c.task_name || c.name}"`;
+      case 'update_task_priority': return `Change a task's priority to ${c.priority}`;
+      case 'create_waiting_for': return `Track waiting for: "${c.name}"${c.waiting_on ? ` (from ${c.waiting_on})` : ''}`;
+      case 'update_decision_status': return `Mark a decision as ${c.status}`;
+      case 'create_calendar_block': return `Block calendar: "${c.title}" ${c.date || ''} ${c.start_time || ''}–${c.end_time || ''}`;
+      case 'archive_project': return `Archive a project`;
+      default: return c.type;
+    }
+  };
+
+  // Which fields are editable per action type
+  const editableFields = (type) => {
+    if (type === 'create_task') return [['name','Task title','text'],['due_date','Due date','date'],['priority','Priority','priority'],['notes','Notes','text']];
+    if (type === 'update_project_next_action') return [['task_name','Next action','text'],['due_date','Due date','date'],['priority','Priority','priority']];
+    if (type === 'create_waiting_for') return [['name','Waiting for','text'],['waiting_on','From whom','text'],['due_date','Expected by','date']];
+    if (type === 'update_decision_status') return [['status','New status','decstatus'],['outcome','Outcome','text']];
+    if (type === 'create_calendar_block') return [['title','Title','text'],['date','Date','date'],['start_time','Start','time'],['end_time','End','time']];
+    if (type === 'update_task_priority') return [['priority','Priority','priority']];
+    return [];
+  };
+
+  const setCard = (i, patch) => setStates(prev => prev.map((s,idx)=> idx===i ? {...s, ...patch} : s));
+  const setField = (i, key, val) => setStates(prev => prev.map((s,idx)=> idx===i ? {...s, edited:{...s.edited, [key]:val}} : s));
+
+  const approve = async (i, wasEdited) => {
+    const card = states[i];
+    const c = card.edited;
+    setCard(i, { status:'applying' });
+    const res = await applyProposedAction(c.type, c);
+    await logProposal({
+      action_type: c.type,
+      explanation: c.rationale || '',
+      payload: changes[i],
+      final_payload: c,
+      status: res.ok ? (wasEdited ? 'edited_approved' : 'approved') : 'failed',
+      result_ref: res.ref,
+      result_note: res.note,
+      source_request: sourceRequest,
+    });
+    setCard(i, { status: res.ok ? 'approved' : 'failed', note: res.note || '', editing:false });
+  };
+
+  const reject = async (i) => {
+    const c = states[i].edited;
+    await logProposal({
+      action_type: c.type,
+      explanation: c.rationale || '',
+      payload: changes[i],
+      status: 'rejected',
+      source_request: sourceRequest,
+    });
+    setCard(i, { status:'rejected' });
+  };
+
+  return (
+    <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)'}}>
+      <div className="section-title" style={{marginTop:0}}>Proposed by {ASSISTANT_NAME}</div>
+      <div className="meta" style={{marginBottom:10}}>Nothing changes until you approve. Edit any proposal first if you want to tweak it.</div>
+
+      {states.map((card, i) => {
+        const c = card.edited;
+        return (
+          <div key={i} className="card-sm" style={{background:'var(--surface2)',marginBottom:8}}>
+            <div className="row" style={{gap:6,marginBottom:4}}>
+              <span className="pill pill-purple">{(c.type||'change').replace(/_/g,' ')}</span>
+              {card.status==='approved' && <span className="pill pill-green">✓ Approved</span>}
+              {card.status==='rejected' && <span className="pill pill-muted">Rejected</span>}
+              {card.status==='failed' && <span className="pill pill-red">Failed</span>}
+            </div>
+
+            <div style={{fontSize:13,marginBottom:2}}>{describe(c)}</div>
+            {c.rationale && <div className="meta" style={{marginBottom:6}}>{c.rationale}</div>}
+
+            {/* Editing form */}
+            {card.editing && card.status==='pending' && (
+              <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid var(--border)'}}>
+                {editableFields(c.type).map(([key,label,kind])=>(
+                  <div className="field" key={key} style={{marginBottom:8}}>
+                    <label className="label">{label}</label>
+                    {kind==='priority' ? (
+                      <select className="input" value={c[key]||'medium'} onChange={e=>setField(i,key,e.target.value)}>
+                        <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+                      </select>
+                    ) : kind==='decstatus' ? (
+                      <select className="input" value={c[key]||'decided'} onChange={e=>setField(i,key,e.target.value)}>
+                        <option value="decided">Decided</option><option value="deferred">Deferred</option><option value="dropped">Dropped</option>
+                      </select>
+                    ) : (
+                      <input className="input" type={kind==='date'?'date':kind==='time'?'time':'text'} value={c[key]||''} onChange={e=>setField(i,key,e.target.value)}/>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Action buttons */}
+            {card.status==='pending' && (
+              <div className="row" style={{gap:6,marginTop:8}}>
+                <button className="btn btn-primary btn-sm" onClick={()=>approve(i, card.editing)}>Approve</button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setCard(i,{editing:!card.editing})}>{card.editing?'Done editing':'Edit'}</button>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={()=>reject(i)}>Reject</button>
+              </div>
+            )}
+            {card.status==='applying' && <div className="meta" style={{marginTop:6}}>Applying…</div>}
+            {card.status==='failed' && <div className="meta" style={{marginTop:6,color:'var(--red)'}}>{card.note}</div>}
+            {card.status==='approved' && <div className="meta" style={{marginTop:6,color:'var(--green)'}}>Done — added to your system.</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
 function HelmPage() {
   const [loading, setLoading] = useState(false);
@@ -1590,19 +1814,7 @@ function HelmPage() {
           )}
 
           {result.proposed_changes?.length>0 && (
-            <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)'}}>
-              <div className="section-title" style={{marginTop:0}}>Proposed by {ASSISTANT_NAME}</div>
-              <div className="meta" style={{marginBottom:8}}>{ASSISTANT_NAME} suggests these. Nothing changes automatically — an approval step is coming in the next build.</div>
-              {result.proposed_changes.map((c,i)=>(
-                <div key={i} className="card-sm" style={{background:'var(--surface2)'}}>
-                  <div className="row" style={{gap:6,marginBottom:2}}>
-                    <span className="pill pill-purple">{(c.type||'change').replace(/_/g,' ')}</span>
-                  </div>
-                  <div style={{fontSize:13}}>{c.name || c.title || c.rationale || JSON.stringify(c)}</div>
-                  {c.rationale && (c.name||c.title) && <div className="meta" style={{marginTop:2}}>{c.rationale}</div>}
-                </div>
-              ))}
-            </div>
+            <ProposedActions changes={result.proposed_changes} sourceRequest={result.type}/>
           )}
 
           {result.flags?.length>0 && (
