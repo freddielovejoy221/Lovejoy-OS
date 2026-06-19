@@ -1,0 +1,1362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Lovejoy OS</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --surface2:  #1e2335;
+      --border:    #2a3050;
+      --text:      #e8eaf2;
+      --muted:     #7b82a0;
+      --accent:    #4f7cff;
+      --accent2:   #7c5cfc;
+      --green:     #22c55e;
+      --amber:     #f59e0b;
+      --red:       #ef4444;
+      --radius:    12px;
+      --nav-h:     64px;
+    }
+
+    html, body, #root { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    /* ── LAYOUT ── */
+    .app { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+    .topbar { height: var(--nav-h); background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 12px; flex-shrink: 0; }
+    .topbar-logo { font-size: 17px; font-weight: 700; letter-spacing: -0.5px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .topbar-title { font-size: 15px; color: var(--muted); flex: 1; }
+    .topbar-user { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: white; cursor: pointer; }
+
+    .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .page { flex: 1; overflow-y: auto; padding: 16px 16px 80px; }
+
+    .bottomnav { height: var(--nav-h); background: var(--surface); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-around; flex-shrink: 0; padding: 0 4px; }
+    .nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 12px; border-radius: 10px; cursor: pointer; transition: all 0.15s; flex: 1; border: none; background: none; color: var(--muted); font-size: 10px; }
+    .nav-item.active { color: var(--accent); }
+    .nav-item svg { width: 22px; height: 22px; }
+
+    /* ── CARDS & SURFACES ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
+    .card-sm { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+    .section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; }
+    .section-title:first-child { margin-top: 0; }
+
+    /* ── PILLS & BADGES ── */
+    .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+    .pill-blue   { background: rgba(79,124,255,0.15); color: #7ba4ff; }
+    .pill-green  { background: rgba(34,197,94,0.15);  color: #4ade80; }
+    .pill-amber  { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .pill-red    { background: rgba(239,68,68,0.15);  color: #f87171; }
+    .pill-purple { background: rgba(124,92,252,0.15); color: #a78bfa; }
+    .pill-muted  { background: rgba(123,130,160,0.12); color: var(--muted); }
+
+    /* ── BUTTONS ── */
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: #3d6ae0; }
+    .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+    .btn-danger { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
+    .btn-sm { padding: 6px 12px; font-size: 13px; }
+    .btn-icon { padding: 8px; border-radius: 8px; }
+
+    /* ── FORMS ── */
+    .input { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; color: var(--text); outline: none; transition: border 0.15s; }
+    .input:focus { border-color: var(--accent); }
+    .input::placeholder { color: var(--muted); }
+    .label { font-size: 12px; color: var(--muted); margin-bottom: 5px; display: block; }
+    .field { margin-bottom: 14px; }
+    select.input { appearance: none; cursor: pointer; }
+    textarea.input { resize: vertical; min-height: 80px; }
+
+    /* ── MODAL ── */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: flex-end; justify-content: center; padding: 0; }
+    .modal { background: var(--surface); border-radius: 20px 20px 0 0; width: 100%; max-width: 600px; max-height: 90dvh; overflow-y: auto; padding: 20px 16px 32px; }
+    .modal-handle { width: 40px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 20px; }
+    .modal-title { font-size: 17px; font-weight: 600; margin-bottom: 18px; }
+
+    /* ── LOGIN ── */
+    .login-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100dvh; padding: 32px 24px; gap: 8px; }
+    .login-logo { font-size: 28px; font-weight: 800; letter-spacing: -1px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 4px; }
+    .login-sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; text-align: center; }
+    .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; width: 100%; max-width: 360px; }
+
+    /* ── MISC ── */
+    .row { display: flex; align-items: center; gap: 8px; }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .icon-area { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+    .divider { height: 1px; background: var(--border); margin: 12px 0; }
+    .empty { text-align: center; padding: 40px 16px; color: var(--muted); font-size: 14px; }
+    .empty-icon { font-size: 32px; margin-bottom: 8px; }
+    .spinner { width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 40px auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fab { position: fixed; bottom: calc(var(--nav-h) + 16px); right: 16px; width: 52px; height: 52px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2)); border: none; color: white; font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 20px rgba(79,124,255,0.4); z-index: 50; }
+    .name { font-size: 14px; font-weight: 500; color: var(--text); }
+    .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+    /* ── DASHBOARD SCORE ── */
+    .score-ring { width: 80px; height: 80px; }
+    .dash-stat { text-align: center; }
+    .dash-stat-num { font-size: 28px; font-weight: 700; line-height: 1; }
+    .dash-stat-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+    /* ── QUICK CAPTURE ── */
+    .qc-type-row { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+    .qc-type-btn { padding: 6px 12px; border-radius: 20px; font-size: 12px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; transition: all 0.15s; }
+    .qc-type-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const SUPABASE_URL = 'https://kulljpwjmkqxtoqueovz.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1bGxqcHdqbWtxeHRvcXVlb3Z6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTE1NzIsImV4cCI6MjA5NzM2NzU3Mn0.E1Eq5Z0TIDuVKmU92LXwaRiGIlLo70TwNP4GBwnOmNo';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const { useState, useEffect, useCallback } = React;
+
+// ── ICONS ────────────────────────────────────────────────────
+const Icon = ({ name, size = 20 }) => {
+  const icons = {
+    home: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+    layers: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>,
+    folder: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>,
+    check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><polyline points="20 6 9 17 4 12"/></svg>,
+    plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    zap: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
+    clock: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+    box: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>,
+    user: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+    x: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    chevron: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><polyline points="9 18 15 12 9 6"/></svg>,
+    alert: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+    decision: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+    wait: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>,
+    logout: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+    edit: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    trash: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width={size} height={size}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>,
+  };
+  return icons[name] || null;
+};
+
+// ── HELPERS ──────────────────────────────────────────────────
+const priorityPill = p => {
+  if (p === 'high')   return <span className="pill pill-red">High</span>;
+  if (p === 'medium') return <span className="pill pill-amber">Medium</span>;
+  return <span className="pill pill-muted">Low</span>;
+};
+const statusPill = s => {
+  const map = { active:'pill-blue', on_hold:'pill-amber', complete:'pill-green', cancelled:'pill-muted',
+                todo:'pill-blue', in_progress:'pill-purple', done:'pill-green',
+                open:'pill-amber', decided:'pill-green', deferred:'pill-muted', dropped:'pill-muted',
+                chased:'pill-purple', received:'pill-green' };
+  const label = s.replace('_',' ');
+  return <span className={`pill ${map[s] || 'pill-muted'}`}>{label}</span>;
+};
+const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'}) : null;
+const daysUntil = d => {
+  if (!d) return null;
+  return Math.ceil((new Date(d) - new Date()) / 86400000);
+};
+const isOverdue = d => d && daysUntil(d) < 0;
+const isDueSoon = d => { const n = daysUntil(d); return n !== null && n >= 0 && n <= 30; };
+
+// ── LOGIN ─────────────────────────────────────────────────────
+function Login({ onLogin }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleLogin = async () => {
+    setLoading(true); setError('');
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { setError(error.message); setLoading(false); }
+    else onLogin(data.user);
+  };
+
+  return (
+    <div className="login-wrap">
+      <div className="login-logo">Lovejoy OS</div>
+      <div className="login-sub">Your personal chief of staff</div>
+      <div className="login-card">
+        <div className="field">
+          <label className="label">Email</label>
+          <input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" />
+        </div>
+        <div className="field">
+          <label className="label">Password</label>
+          <input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&handleLogin()} />
+        </div>
+        {error && <div style={{color:'var(--red)',fontSize:13,marginBottom:12}}>{error}</div>}
+        <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={handleLogin} disabled={loading}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── MODAL WRAPPER ─────────────────────────────────────────────
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-handle" />
+        <div className="row-between" style={{marginBottom:18}}>
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={onClose}><Icon name="x" size={16}/></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── AREAS PAGE ────────────────────────────────────────────────
+function AreasPage() {
+  const [areas, setAreas] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null); // null | 'area' | 'role'
+  const [editing, setEditing] = useState(null);
+  const [expanded, setExpanded] = useState({});
+  const [form, setForm] = useState({});
+
+  const load = async () => {
+    const [a, r] = await Promise.all([
+      supabase.from('areas').select('*').order('sort_order'),
+      supabase.from('roles').select('*').order('sort_order'),
+    ]);
+    setAreas(a.data || []); setRoles(r.data || []); setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const saveArea = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('areas').update(form).eq('id', editing.id);
+    else await supabase.from('areas').insert(form);
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const saveRole = async () => {
+    if (!form.name || !form.area_id) return;
+    if (editing) await supabase.from('roles').update(form).eq('id', editing.id);
+    else await supabase.from('roles').insert(form);
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const openEdit = (type, item) => {
+    setEditing(item); setForm({...item}); setModal(type);
+  };
+
+  if (loading) return <div className="spinner"/>;
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:16}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Areas & Roles</h1>
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({is_active:true});setModal('area');}}>
+          <Icon name="plus" size={14}/> Area
+        </button>
+      </div>
+
+      {areas.map(area => {
+        const areaRoles = roles.filter(r => r.area_id === area.id);
+        const open = expanded[area.id];
+        return (
+          <div key={area.id} className="card" style={{marginBottom:10}}>
+            <div className="row-between" onClick={()=>setExpanded(p=>({...p,[area.id]:!p[area.id]}))}>
+              <div className="row" style={{gap:10}}>
+                <div className="icon-area" style={{background:`${area.colour}22`}}>
+                  <span>{area.icon}</span>
+                </div>
+                <div>
+                  <div className="name">{area.name}</div>
+                  <div className="meta">{areaRoles.length} role{areaRoles.length!==1?'s':''}</div>
+                </div>
+              </div>
+              <div className="row" style={{gap:6}}>
+                <button className="btn btn-ghost btn-sm btn-icon" onClick={e=>{e.stopPropagation();openEdit('area',area);}}>
+                  <Icon name="edit" size={14}/>
+                </button>
+                <Icon name="chevron" size={16} style={{transform:open?'rotate(90deg)':'', transition:'transform 0.2s', color:'var(--muted)'}}/>
+              </div>
+            </div>
+
+            {open && (
+              <div style={{marginTop:12}}>
+                <div className="divider"/>
+                {area.description && <div className="meta" style={{marginBottom:10}}>{area.description}</div>}
+                {areaRoles.map(role => (
+                  <div key={role.id} className="card-sm" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                    <div>
+                      <div className="name" style={{fontSize:13}}>{role.name}</div>
+                      {role.description && <div className="meta">{role.description}</div>}
+                    </div>
+                    <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>openEdit('role',{...role,area_id:role.area_id})}>
+                      <Icon name="edit" size={13}/>
+                    </button>
+                  </div>
+                ))}
+                <button className="btn btn-ghost btn-sm" style={{marginTop:6,width:'100%',justifyContent:'center'}}
+                  onClick={()=>{setEditing(null);setForm({area_id:area.id,is_active:true});setModal('role');}}>
+                  <Icon name="plus" size={13}/> Add role
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {modal === 'area' && (
+        <Modal title={editing?'Edit area':'New area'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Name</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Health & Fitness"/></div>
+          <div className="field"><label className="label">Description</label><input className="input" value={form.description||''} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="What this area covers"/></div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div className="field" style={{flex:1,marginBottom:0}}><label className="label">Icon (emoji)</label><input className="input" value={form.icon||''} onChange={e=>setForm(p=>({...p,icon:e.target.value}))} placeholder="🏃"/></div>
+            <div className="field" style={{flex:1,marginBottom:0}}><label className="label">Colour (hex)</label><input className="input" value={form.colour||''} onChange={e=>setForm(p=>({...p,colour:e.target.value}))} placeholder="#22C55E"/></div>
+          </div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveArea}>Save</button>
+        </Modal>
+      )}
+
+      {modal === 'role' && (
+        <Modal title={editing?'Edit role':'New role'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Area</label>
+            <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value}))}>
+              <option value="">Select area…</option>
+              {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label className="label">Role name</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Athlete"/></div>
+          <div className="field"><label className="label">Description</label><input className="input" value={form.description||''} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="What this role involves"/></div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveRole}>Save</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── PROJECTS PAGE ─────────────────────────────────────────────
+function ProjectsPage() {
+  const [projects, setProjects] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [filter, setFilter] = useState('active');
+
+  const load = async () => {
+    const [p, a] = await Promise.all([
+      supabase.from('projects').select('*').order('created_at', {ascending:false}),
+      supabase.from('areas').select('id,name,icon').order('sort_order'),
+    ]);
+    setProjects(p.data||[]); setAreas(a.data||[]); setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const save = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('projects').update(form).eq('id', editing.id);
+    else await supabase.from('projects').insert({...form, status: form.status||'active', priority: form.priority||'medium'});
+    setModal(false); setForm({}); setEditing(null); load();
+  };
+
+  const openEdit = item => { setEditing(item); setForm({...item}); setModal(true); };
+
+  const areaMap = Object.fromEntries(areas.map(a=>[a.id, a]));
+  const filtered = projects.filter(p => filter === 'all' ? true : p.status === filter);
+
+  if (loading) return <div className="spinner"/>;
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:12}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Projects</h1>
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({status:'active',priority:'medium'});setModal(true);}}>
+          <Icon name="plus" size={14}/> New
+        </button>
+      </div>
+
+      <div style={{display:'flex',gap:6,marginBottom:16,overflowX:'auto',paddingBottom:4}}>
+        {['active','on_hold','complete','all'].map(f=>(
+          <button key={f} className={`qc-type-btn ${filter===f?'active':''}`} onClick={()=>setFilter(f)}>
+            {f === 'all' ? 'All' : f.replace('_',' ')}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div className="empty"><div className="empty-icon">📁</div>No {filter} projects</div>}
+
+      {filtered.map(p => {
+        const area = areaMap[p.area_id];
+        return (
+          <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
+            <div className="row-between">
+              <div style={{flex:1,minWidth:0}}>
+                <div className="name" style={{marginBottom:4}}>{p.name}</div>
+                {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
+                <div className="tag-row">
+                  {statusPill(p.status)}
+                  {priorityPill(p.priority)}
+                  {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                  {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
+                    {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
+                  </span>}
+                </div>
+              </div>
+              <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+            </div>
+          </div>
+        );
+      })}
+
+      {modal && (
+        <Modal title={editing?'Edit project':'New project'} onClose={()=>{setModal(false);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Name</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Project name"/></div>
+          <div className="field"><label className="label">Description</label><textarea className="input" value={form.description||''} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="What does success look like?"/></div>
+          <div className="field"><label className="label">Area</label>
+            <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+              <option value="">No area</option>
+              {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}>
+              <label className="label">Status</label>
+              <select className="input" value={form.status||'active'} onChange={e=>setForm(p=>({...p,status:e.target.value}))}>
+                <option value="active">Active</option>
+                <option value="on_hold">On hold</option>
+                <option value="complete">Complete</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div style={{flex:1}}>
+              <label className="label">Priority</label>
+              <select className="input" value={form.priority||'medium'} onChange={e=>setForm(p=>({...p,priority:e.target.value}))}>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+          </div>
+          <div className="field"><label className="label">Due date</label><input className="input" type="date" value={form.due_date||''} onChange={e=>setForm(p=>({...p,due_date:e.target.value||null}))}/></div>
+          <div className="field"><label className="label">Notes</label><textarea className="input" value={form.notes||''} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} placeholder="Any context or notes"/></div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={save}>Save project</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── TASKS PAGE ────────────────────────────────────────────────
+function TasksPage() {
+  const [tasks, setTasks] = useState([]);
+  const [waitingFor, setWaitingFor] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [tab, setTab] = useState('tasks');
+
+  const load = async () => {
+    const [t, w, a, p] = await Promise.all([
+      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled').order('due_date', {ascending:true,nullsFirst:false}),
+      supabase.from('waiting_for').select('*').eq('status','open').order('due_date',{ascending:true,nullsFirst:false}),
+      supabase.from('areas').select('id,name,icon').order('sort_order'),
+      supabase.from('projects').select('id,name').eq('status','active').order('name'),
+    ]);
+    setTasks(t.data||[]); setWaitingFor(w.data||[]); setAreas(a.data||[]); setProjects(p.data||[]); setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const saveTask = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('tasks').update(form).eq('id', editing.id);
+    else await supabase.from('tasks').insert({...form, status:'todo', priority:form.priority||'medium'});
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const saveWaiting = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('waiting_for').update(form).eq('id', editing.id);
+    else await supabase.from('waiting_for').insert({...form, status:'open'});
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const completeTask = async (id, e) => {
+    e.stopPropagation();
+    await supabase.from('tasks').update({status:'done', completed_at: new Date().toISOString()}).eq('id', id);
+    load();
+  };
+
+  const chaseWaiting = async (id, e) => {
+    e.stopPropagation();
+    await supabase.from('waiting_for').update({status:'chased', chased_at: new Date().toISOString()}).eq('id', id);
+    load();
+  };
+
+  const areaMap = Object.fromEntries(areas.map(a=>[a.id,a]));
+  const projMap = Object.fromEntries(projects.map(p=>[p.id,p]));
+
+  if (loading) return <div className="spinner"/>;
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:12}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Tasks</h1>
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({priority:'medium',status:'todo'});setModal(tab==='tasks'?'task':'waiting');}}>
+          <Icon name="plus" size={14}/> New
+        </button>
+      </div>
+
+      <div style={{display:'flex',gap:6,marginBottom:16}}>
+        <button className={`qc-type-btn ${tab==='tasks'?'active':''}`} onClick={()=>setTab('tasks')}>Tasks ({tasks.length})</button>
+        <button className={`qc-type-btn ${tab==='waiting'?'active':''}`} onClick={()=>setTab('waiting')}>Waiting for ({waitingFor.length})</button>
+      </div>
+
+      {tab === 'tasks' && (
+        <>
+          {tasks.length === 0 && <div className="empty"><div className="empty-icon">✅</div>No open tasks</div>}
+          {tasks.map(t => {
+            const area = areaMap[t.area_id];
+            const proj = projMap[t.project_id];
+            return (
+              <div key={t.id} className="card-sm" style={{cursor:'pointer'}} onClick={()=>{setEditing(t);setForm({...t});setModal('task');}}>
+                <div className="row-between">
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="row" style={{gap:6,marginBottom:t.is_next_action?4:0}}>
+                      {t.is_next_action && <span style={{color:'var(--accent)',fontSize:11,fontWeight:600}}>⚡ NEXT</span>}
+                      <div className="name" style={{fontSize:13}}>{t.name}</div>
+                    </div>
+                    <div className="tag-row">
+                      {priorityPill(t.priority)}
+                      {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                      {proj && <span className="pill pill-muted">📁 {proj.name}</span>}
+                      {t.due_date && <span className={`pill ${isOverdue(t.due_date)?'pill-red':isDueSoon(t.due_date)?'pill-amber':'pill-muted'}`}>
+                        {isOverdue(t.due_date)?'Overdue':'Due '}{fmtDate(t.due_date)}
+                      </span>}
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{marginLeft:8,flexShrink:0,borderRadius:'50%'}} onClick={e=>completeTask(t.id,e)}>
+                    <Icon name="check" size={14}/>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {tab === 'waiting' && (
+        <>
+          {waitingFor.length === 0 && <div className="empty"><div className="empty-icon">👥</div>Nothing waiting</div>}
+          {waitingFor.map(w => {
+            const area = areaMap[w.area_id];
+            return (
+              <div key={w.id} className="card-sm" style={{cursor:'pointer'}} onClick={()=>{setEditing(w);setForm({...w});setModal('waiting');}}>
+                <div className="row-between">
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="name" style={{fontSize:13}}>{w.name}</div>
+                    <div className="tag-row">
+                      {w.waiting_on && <span className="pill pill-purple">👤 {w.waiting_on}</span>}
+                      {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                      {w.due_date && <span className={`pill ${isOverdue(w.due_date)?'pill-red':'pill-amber'}`}>Expected {fmtDate(w.due_date)}</span>}
+                      {w.chased_at && <span className="pill pill-muted">Chased {fmtDate(w.chased_at)}</span>}
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" style={{marginLeft:8,flexShrink:0,fontSize:11}} onClick={e=>chaseWaiting(w.id,e)}>
+                    Chase
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {modal === 'task' && (
+        <Modal title={editing?'Edit task':'New task'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Task</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="What needs doing?"/></div>
+          <div className="field"><label className="label">Area</label>
+            <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+              <option value="">No area</option>
+              {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label className="label">Project</label>
+            <select className="input" value={form.project_id||''} onChange={e=>setForm(p=>({...p,project_id:e.target.value||null}))}>
+              <option value="">No project</option>
+              {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}>
+              <label className="label">Priority</label>
+              <select className="input" value={form.priority||'medium'} onChange={e=>setForm(p=>({...p,priority:e.target.value}))}>
+                <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+              </select>
+            </div>
+            <div style={{flex:1}}>
+              <label className="label">Status</label>
+              <select className="input" value={form.status||'todo'} onChange={e=>setForm(p=>({...p,status:e.target.value}))}>
+                <option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option><option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+          </div>
+          <div className="field"><label className="label">Due date</label><input className="input" type="date" value={form.due_date||''} onChange={e=>setForm(p=>({...p,due_date:e.target.value||null}))}/></div>
+          <div className="field" style={{display:'flex',alignItems:'center',gap:10}}>
+            <input type="checkbox" id="isNext" checked={!!form.is_next_action} onChange={e=>setForm(p=>({...p,is_next_action:e.target.checked}))} style={{width:16,height:16}}/>
+            <label htmlFor="isNext" style={{fontSize:13,color:'var(--text)'}}>⚡ Mark as next action</label>
+          </div>
+          <div className="field"><label className="label">Notes</label><textarea className="input" value={form.notes||''} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} placeholder="Any context"/></div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveTask}>Save task</button>
+        </Modal>
+      )}
+
+      {modal === 'waiting' && (
+        <Modal title={editing?'Edit waiting for':'New waiting for'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">What are you waiting for?</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Quote from plumber"/></div>
+          <div className="field"><label className="label">Waiting on (person or org)</label><input className="input" value={form.waiting_on||''} onChange={e=>setForm(p=>({...p,waiting_on:e.target.value}))} placeholder="e.g. HMRC"/></div>
+          <div className="field"><label className="label">Area</label>
+            <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+              <option value="">No area</option>
+              {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label className="label">Expected by</label><input className="input" type="date" value={form.due_date||''} onChange={e=>setForm(p=>({...p,due_date:e.target.value||null}))}/></div>
+          <div className="field"><label className="label">Notes</label><textarea className="input" value={form.notes||''} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} placeholder="Any context"/></div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveWaiting}>Save</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── DECISIONS & ASSETS PAGE ───────────────────────────────────
+function DecisionsAssetsPage() {
+  const [decisions, setDecisions] = useState([]);
+  const [assets, setAssets] = useState([]);
+  const [areas, setAreas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('decisions');
+  const [modal, setModal] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+
+  const load = async () => {
+    const [d, a, ar] = await Promise.all([
+      supabase.from('decisions').select('*').order('created_at',{ascending:false}),
+      supabase.from('assets').select('*').order('name'),
+      supabase.from('areas').select('id,name,icon').order('sort_order'),
+    ]);
+    setDecisions(d.data||[]); setAssets(a.data||[]); setAreas(ar.data||[]); setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const saveDecision = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('decisions').update(form).eq('id', editing.id);
+    else await supabase.from('decisions').insert({...form, status:'open'});
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const saveAsset = async () => {
+    if (!form.name) return;
+    if (editing) await supabase.from('assets').update(form).eq('id', editing.id);
+    else await supabase.from('assets').insert({...form, status:'active'});
+    setModal(null); setForm({}); setEditing(null); load();
+  };
+
+  const areaMap = Object.fromEntries(areas.map(a=>[a.id,a]));
+  const openDecisions = decisions.filter(d=>d.status==='open');
+  const otherDecisions = decisions.filter(d=>d.status!=='open');
+
+  const assetCategories = ['vehicle','device','subscription','account','property','insurance','membership','other'];
+
+  if (loading) return <div className="spinner"/>;
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:12}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>{tab==='decisions'?'Decisions':'Assets'}</h1>
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({status:tab==='decisions'?'open':'active'});setModal(tab==='decisions'?'decision':'asset');}}>
+          <Icon name="plus" size={14}/> New
+        </button>
+      </div>
+
+      <div style={{display:'flex',gap:6,marginBottom:16}}>
+        <button className={`qc-type-btn ${tab==='decisions'?'active':''}`} onClick={()=>setTab('decisions')}>Decisions ({openDecisions.length} open)</button>
+        <button className={`qc-type-btn ${tab==='assets'?'active':''}`} onClick={()=>setTab('assets')}>Assets ({assets.length})</button>
+      </div>
+
+      {tab === 'decisions' && (
+        <>
+          {decisions.length === 0 && <div className="empty"><div className="empty-icon">🤔</div>No decisions logged</div>}
+          {openDecisions.length > 0 && <div className="section-title">Open</div>}
+          {openDecisions.map(d => {
+            const area = areaMap[d.area_id];
+            return (
+              <div key={d.id} className="card" style={{cursor:'pointer',borderLeft:'3px solid var(--amber)'}} onClick={()=>{setEditing(d);setForm({...d});setModal('decision');}}>
+                <div className="name" style={{marginBottom:4}}>{d.name}</div>
+                {d.context && <div className="meta" style={{marginBottom:6}}>{d.context}</div>}
+                <div className="tag-row">
+                  {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                  {d.decide_by && <span className={`pill ${isOverdue(d.decide_by)?'pill-red':'pill-amber'}`}>Decide by {fmtDate(d.decide_by)}</span>}
+                </div>
+              </div>
+            );
+          })}
+          {otherDecisions.length > 0 && <div className="section-title">Decided / deferred</div>}
+          {otherDecisions.map(d => (
+            <div key={d.id} className="card-sm" style={{cursor:'pointer',opacity:0.6}} onClick={()=>{setEditing(d);setForm({...d});setModal('decision');}}>
+              <div className="row-between">
+                <div className="name" style={{fontSize:13}}>{d.name}</div>
+                {statusPill(d.status)}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {tab === 'assets' && (
+        <>
+          {assets.length === 0 && <div className="empty"><div className="empty-icon">📦</div>No assets tracked</div>}
+          {assetCategories.map(cat => {
+            const catAssets = assets.filter(a=>a.category===cat);
+            if (catAssets.length === 0) return null;
+            return (
+              <div key={cat}>
+                <div className="section-title">{cat.charAt(0).toUpperCase()+cat.slice(1)}</div>
+                {catAssets.map(a => {
+                  const area = areaMap[a.area_id];
+                  const alerts = [];
+                  if (isOverdue(a.expires_at)) alerts.push({label:'Expired', type:'red'});
+                  else if (isDueSoon(a.expires_at)) alerts.push({label:`Renews ${fmtDate(a.expires_at)}`, type:'amber'});
+                  if (isOverdue(a.mot_due_at)) alerts.push({label:'MOT overdue', type:'red'});
+                  else if (isDueSoon(a.mot_due_at)) alerts.push({label:`MOT ${fmtDate(a.mot_due_at)}`, type:'amber'});
+                  if (isDueSoon(a.next_service_at)) alerts.push({label:`Service ${fmtDate(a.next_service_at)}`, type:'amber'});
+                  return (
+                    <div key={a.id} className="card-sm" style={{cursor:'pointer'}} onClick={()=>{setEditing(a);setForm({...a});setModal('asset');}}>
+                      <div className="row-between">
+                        <div style={{flex:1,minWidth:0}}>
+                          <div className="name" style={{fontSize:13}}>{a.name}</div>
+                          {a.provider && <div className="meta">{a.provider}</div>}
+                          <div className="tag-row">
+                            {area && <span className="pill pill-muted">{area.icon}</span>}
+                            {alerts.map((al,i)=><span key={i} className={`pill pill-${al.type}`}>{al.label}</span>)}
+                            {a.monthly_cost && <span className="pill pill-muted">£{a.monthly_cost}/mo</span>}
+                            {a.annual_cost && <span className="pill pill-muted">£{a.annual_cost}/yr</span>}
+                          </div>
+                        </div>
+                        <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {modal === 'decision' && (
+        <Modal title={editing?'Edit decision':'New decision'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Decision to make</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Which savings account to use"/></div>
+          <div className="field"><label className="label">Context</label><textarea className="input" value={form.context||''} onChange={e=>setForm(p=>({...p,context:e.target.value}))} placeholder="Background and what is known"/></div>
+          <div className="field"><label className="label">Options being considered</label><textarea className="input" value={form.options||''} onChange={e=>setForm(p=>({...p,options:e.target.value}))} placeholder="Option A, Option B…"/></div>
+          <div className="field"><label className="label">Area</label>
+            <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+              <option value="">No area</option>
+              {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}>
+              <label className="label">Status</label>
+              <select className="input" value={form.status||'open'} onChange={e=>setForm(p=>({...p,status:e.target.value}))}>
+                <option value="open">Open</option><option value="decided">Decided</option><option value="deferred">Deferred</option><option value="dropped">Dropped</option>
+              </select>
+            </div>
+            <div style={{flex:1}}>
+              <label className="label">Decide by</label>
+              <input className="input" type="date" value={form.decide_by||''} onChange={e=>setForm(p=>({...p,decide_by:e.target.value||null}))}/>
+            </div>
+          </div>
+          {form.status === 'decided' && <div className="field"><label className="label">Outcome</label><textarea className="input" value={form.outcome||''} onChange={e=>setForm(p=>({...p,outcome:e.target.value}))} placeholder="What was decided and why"/></div>}
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveDecision}>Save</button>
+        </Modal>
+      )}
+
+      {modal === 'asset' && (
+        <Modal title={editing?'Edit asset':'New asset'} onClose={()=>{setModal(null);setForm({});setEditing(null);}}>
+          <div className="field"><label className="label">Name</label><input className="input" value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Car Insurance"/></div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}>
+              <label className="label">Category</label>
+              <select className="input" value={form.category||''} onChange={e=>setForm(p=>({...p,category:e.target.value||null}))}>
+                <option value="">Select…</option>
+                {assetCategories.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div style={{flex:1}}>
+              <label className="label">Area</label>
+              <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+                <option value="">No area</option>
+                {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="field"><label className="label">Provider / brand</label><input className="input" value={form.provider||''} onChange={e=>setForm(p=>({...p,provider:e.target.value}))} placeholder="e.g. Admiral, Apple, Monzo"/></div>
+          <div className="field"><label className="label">Account / policy ref</label><input className="input" value={form.account_ref||''} onChange={e=>setForm(p=>({...p,account_ref:e.target.value}))} placeholder="Reference number"/></div>
+          <div className="section-title" style={{marginTop:4}}>Key dates</div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}><label className="label">Renewal / expires</label><input className="input" type="date" value={form.expires_at||''} onChange={e=>setForm(p=>({...p,expires_at:e.target.value||null}))}/></div>
+            <div style={{flex:1}}><label className="label">Next service</label><input className="input" type="date" value={form.next_service_at||''} onChange={e=>setForm(p=>({...p,next_service_at:e.target.value||null}))}/></div>
+          </div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}><label className="label">MOT due</label><input className="input" type="date" value={form.mot_due_at||''} onChange={e=>setForm(p=>({...p,mot_due_at:e.target.value||null}))}/></div>
+            <div style={{flex:1}}><label className="label">Warranty until</label><input className="input" type="date" value={form.warranty_until||''} onChange={e=>setForm(p=>({...p,warranty_until:e.target.value||null}))}/></div>
+          </div>
+          <div className="section-title" style={{marginTop:4}}>Costs</div>
+          <div className="row" style={{gap:8,marginBottom:14}}>
+            <div style={{flex:1}}><label className="label">Monthly cost (£)</label><input className="input" type="number" value={form.monthly_cost||''} onChange={e=>setForm(p=>({...p,monthly_cost:e.target.value||null}))}/></div>
+            <div style={{flex:1}}><label className="label">Annual cost (£)</label><input className="input" type="number" value={form.annual_cost||''} onChange={e=>setForm(p=>({...p,annual_cost:e.target.value||null}))}/></div>
+          </div>
+          <div className="field"><label className="label">Notes</label><textarea className="input" value={form.notes||''} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} placeholder="Any extra details"/></div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={saveAsset}>Save asset</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── QUICK CAPTURE ─────────────────────────────────────────────
+function QuickCapturePage() {
+  const [type, setType] = useState('task');
+  const [areas, setAreas] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [form, setForm] = useState({priority:'medium'});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(()=>{
+    const load = async () => {
+      const [a,p] = await Promise.all([
+        supabase.from('areas').select('id,name,icon').order('sort_order'),
+        supabase.from('projects').select('id,name').eq('status','active').order('name'),
+      ]);
+      setAreas(a.data||[]); setProjects(p.data||[]);
+    };
+    load();
+  },[]);
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    const tables = { task:'tasks', waiting:'waiting_for', decision:'decisions', project:'projects' };
+    const defaults = {
+      task: { status:'todo', priority:'medium' },
+      waiting: { status:'open' },
+      decision: { status:'open' },
+      project: { status:'active', priority:'medium' },
+    };
+    await supabase.from(tables[type]).insert({...defaults[type], ...form});
+    setSaving(false); setSaved(true); setForm({priority:'medium'});
+    setTimeout(()=>setSaved(false), 2000);
+  };
+
+  const types = [
+    { id:'task', label:'Task' },
+    { id:'waiting', label:'Waiting for' },
+    { id:'decision', label:'Decision' },
+    { id:'project', label:'Project' },
+  ];
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>Quick Capture</h1>
+      <div className="card">
+        <div className="qc-type-row">
+          {types.map(t=>(
+            <button key={t.id} className={`qc-type-btn ${type===t.id?'active':''}`} onClick={()=>{setType(t.id);setForm({priority:'medium'});}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="field">
+          <label className="label">{type==='task'?'What needs doing?':type==='waiting'?'What are you waiting for?':type==='decision'?'What decision needs making?':'Project name'}</label>
+          <textarea className="input" style={{minHeight:64}} value={form.name||''} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Describe it in plain English…" autoFocus/>
+        </div>
+
+        <div className="field">
+          <label className="label">Area</label>
+          <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
+            <option value="">No area</option>
+            {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+          </select>
+        </div>
+
+        {(type==='task') && (
+          <div className="field">
+            <label className="label">Project (optional)</label>
+            <select className="input" value={form.project_id||''} onChange={e=>setForm(p=>({...p,project_id:e.target.value||null}))}>
+              <option value="">No project</option>
+              {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {(type==='task'||type==='project') && (
+          <div className="field">
+            <label className="label">Priority</label>
+            <select className="input" value={form.priority||'medium'} onChange={e=>setForm(p=>({...p,priority:e.target.value}))}>
+              <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+            </select>
+          </div>
+        )}
+
+        {type==='waiting' && (
+          <div className="field">
+            <label className="label">Waiting on</label>
+            <input className="input" value={form.waiting_on||''} onChange={e=>setForm(p=>({...p,waiting_on:e.target.value}))} placeholder="Person or organisation"/>
+          </div>
+        )}
+
+        {type==='task' && (
+          <div className="field" style={{display:'flex',alignItems:'center',gap:10}}>
+            <input type="checkbox" id="nextQC" checked={!!form.is_next_action} onChange={e=>setForm(p=>({...p,is_next_action:e.target.checked}))} style={{width:16,height:16}}/>
+            <label htmlFor="nextQC" style={{fontSize:13,color:'var(--text)'}}>⚡ This is my next action</label>
+          </div>
+        )}
+
+        <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={save} disabled={saving||!form.name}>
+          {saved ? '✓ Saved' : saving ? 'Saving…' : `Capture ${types.find(t=>t.id===type)?.label}`}
+        </button>
+      </div>
+
+      <div className="card" style={{marginTop:8,background:'rgba(79,124,255,0.05)',border:'1px solid rgba(79,124,255,0.2)'}}>
+        <div style={{fontSize:12,color:'var(--muted)',lineHeight:1.6}}>
+          <strong style={{color:'var(--accent)'}}>Quick capture tip</strong><br/>
+          Don't overthink it. Just get it out of your head and into the system. You can add context, assign to projects and set priorities later.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── REVIEWS PAGE ──────────────────────────────────────────────
+function ReviewsPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
+    const [tasks, waiting, decisions, projects, assets] = await Promise.all([
+      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
+      supabase.from('waiting_for').select('*').eq('status','open'),
+      supabase.from('decisions').select('*').eq('status','open'),
+      supabase.from('projects').select('*').eq('status','active'),
+      supabase.from('assets').select('*').eq('status','active'),
+    ]);
+    setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const generatePrompt = () => {
+    if (!data) return '';
+    const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
+    const dueToday = data.tasks.filter(t=>t.due_date===data.today);
+    const nextActions = data.tasks.filter(t=>t.is_next_action);
+    const staleProjects = data.projects.filter(p => {
+      const hasNext = data.tasks.some(t=>t.project_id===p.id&&t.is_next_action);
+      return !hasNext;
+    });
+    const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
+
+    return `# Lovejoy OS — Weekly Review Brief
+Generated: ${new Date().toLocaleDateString('en-GB', {weekday:'long',day:'numeric',month:'long',year:'numeric'})}
+
+## System snapshot
+- Open tasks: ${data.tasks.length}
+- Active projects: ${data.projects.length}
+- Open waiting for: ${data.waiting.length}
+- Open decisions: ${data.decisions.length}
+
+## Overdue tasks (${overdue.length})
+${overdue.length===0?'None overdue.':overdue.map(t=>`- ${t.name}${t.due_date?` (was due ${fmtDate(t.due_date)})`:''}${t.notes?`\n  Context: ${t.notes}`:''}`).join('\n')}
+
+## Due today (${dueToday.length})
+${dueToday.length===0?'Nothing due today.':dueToday.map(t=>`- ${t.name}`).join('\n')}
+
+## Next actions (${nextActions.length})
+${nextActions.length===0?'No next actions flagged — consider reviewing your projects.':nextActions.map(t=>`- ${t.name}`).join('\n')}
+
+## Projects with no next action (${staleProjects.length})
+${staleProjects.length===0?'All active projects have a next action.':staleProjects.map(p=>`- ${p.name}${p.description?`: ${p.description}`:''}`).join('\n')}
+
+## Open waiting for (${data.waiting.length})
+${data.waiting.length===0?'Nothing outstanding.':data.waiting.map(w=>`- ${w.name}${w.waiting_on?` — waiting on ${w.waiting_on}`:''}${w.due_date?` (expected ${fmtDate(w.due_date)})`:''}`).join('\n')}
+
+## Open decisions (${data.decisions.length})
+${data.decisions.length===0?'No open decisions.':data.decisions.map(d=>`- ${d.name}${d.context?`\n  Context: ${d.context}`:''}${d.options?`\n  Options: ${d.options}`:''}`).join('\n')}
+
+## Asset alerts (${urgentAssets.length})
+${urgentAssets.length===0?'No upcoming asset dates in the next 30 days.':urgentAssets.map(a=>{
+  const alerts=[];
+  if(isOverdue(a.expires_at))alerts.push(`EXPIRED ${fmtDate(a.expires_at)}`);
+  else if(isDueSoon(a.expires_at))alerts.push(`renews ${fmtDate(a.expires_at)}`);
+  if(isOverdue(a.mot_due_at))alerts.push(`MOT OVERDUE`);
+  else if(isDueSoon(a.mot_due_at))alerts.push(`MOT ${fmtDate(a.mot_due_at)}`);
+  if(isDueSoon(a.next_service_at))alerts.push(`service ${fmtDate(a.next_service_at)}`);
+  return `- ${a.name}: ${alerts.join(', ')}`;
+}).join('\n')}
+
+---
+## Prompt for AI review
+
+Please act as my personal Chief of Staff and help me with my weekly review. Using the data above:
+
+1. What are the 3 most important things I should focus on this week?
+2. What is at risk of slipping that I should address today?
+3. Are there any decisions I should make now to unblock progress?
+4. What can I safely ignore or defer this week?
+5. Any patterns or concerns you notice in my system?
+
+Be direct and practical. I want clear recommendations, not summaries of what I already know.`;
+  };
+
+  const copyPrompt = () => {
+    navigator.clipboard.writeText(generatePrompt());
+    setCopied(true);
+    setTimeout(()=>setCopied(false), 2500);
+  };
+
+  if (loading) return <div className="spinner"/>;
+
+  const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
+  const staleProjects = data.projects.filter(p => !data.tasks.some(t=>t.project_id===p.id&&t.is_next_action));
+  const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>Weekly Review</h1>
+      <div className="meta" style={{marginBottom:16}}>Generate a brief and paste it into any AI to get your weekly debrief.</div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
+        {[
+          {label:'Open tasks', val:data.tasks.length, color:data.tasks.length>10?'var(--amber)':'var(--text)'},
+          {label:'Overdue', val:overdue.length, color:overdue.length>0?'var(--red)':'var(--text)'},
+          {label:'Open decisions', val:data.decisions.length, color:data.decisions.length>3?'var(--amber)':'var(--text)'},
+          {label:'Stale projects', val:staleProjects.length, color:staleProjects.length>0?'var(--amber)':'var(--text)'},
+          {label:'Waiting for', val:data.waiting.length, color:'var(--text)'},
+          {label:'Asset alerts', val:urgentAssets.length, color:urgentAssets.length>0?'var(--amber)':'var(--text)'},
+        ].map(s=>(
+          <div key={s.label} className="card" style={{textAlign:'center',padding:'12px 8px'}}>
+            <div style={{fontSize:26,fontWeight:700,color:s.color,lineHeight:1}}>{s.val}</div>
+            <div style={{fontSize:11,color:'var(--muted)',marginTop:3}}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',padding:'12px',fontSize:15,marginBottom:12}} onClick={copyPrompt}>
+        {copied ? '✓ Copied to clipboard' : '📋 Copy AI review brief'}
+      </button>
+
+      <div className="card" style={{background:'rgba(79,124,255,0.05)',border:'1px solid rgba(79,124,255,0.15)'}}>
+        <div style={{fontSize:12,color:'var(--muted)',lineHeight:1.7}}>
+          <strong style={{color:'var(--accent)'}}>How to use this</strong><br/>
+          1. Tap <em>Copy AI review brief</em> above<br/>
+          2. Open Claude, ChatGPT or any AI assistant<br/>
+          3. Paste and send<br/>
+          4. Get your personalised weekly debrief
+        </div>
+      </div>
+
+      <div className="section-title" style={{marginTop:20}}>Brief preview</div>
+      <div style={{background:' var(--surface2)',border:'1px solid var(--border)',borderRadius:8,padding:12,fontSize:11,color:'var(--muted)',lineHeight:1.7,whiteSpace:'pre-wrap',fontFamily:'monospace',maxHeight:300,overflow:'auto'}}>
+        {generatePrompt()}
+      </div>
+    </div>
+  );
+}
+
+// ── DASHBOARD ─────────────────────────────────────────────────
+function DashboardPage({ user, onNavigate }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const [tasks, waiting, decisions, projects, assets] = await Promise.all([
+      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
+      supabase.from('waiting_for').select('*').eq('status','open'),
+      supabase.from('decisions').select('*').eq('status','open'),
+      supabase.from('projects').select('*').eq('status','active'),
+      supabase.from('assets').select('*').eq('status','active'),
+    ]);
+    setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  if (loading) return <div className="spinner"/>;
+
+  const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
+  const dueToday = data.tasks.filter(t=>t.due_date===data.today);
+  const nextActions = data.tasks.filter(t=>t.is_next_action);
+  const staleProjects = data.projects.filter(p => !data.tasks.some(t=>t.project_id===p.id&&t.is_next_action));
+  const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
+
+  // Cognitive load score: 0–100, lower is better
+  const score = Math.min(100, overdue.length*15 + staleProjects.length*8 + data.decisions.length*5 + urgentAssets.length*10);
+  const scoreLabel = score <= 20 ? 'Clear' : score <= 45 ? 'Manageable' : score <= 70 ? 'Busy' : 'Overloaded';
+  const scoreColor = score <= 20 ? 'var(--green)' : score <= 45 ? 'var(--accent)' : score <= 70 ? 'var(--amber)' : 'var(--red)';
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  return (
+    <div className="page">
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:13,color:'var(--muted)'}}>{greeting}</div>
+        <div style={{fontSize:22,fontWeight:700,letterSpacing:'-0.5px'}}>Freddie</div>
+      </div>
+
+      {/* Cognitive load */}
+      <div className="card" style={{background:`linear-gradient(135deg, ${scoreColor}18, transparent)`,border:`1px solid ${scoreColor}40`,marginBottom:16}}>
+        <div className="row-between">
+          <div>
+            <div style={{fontSize:11,color:'var(--muted)',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em'}}>Cognitive load</div>
+            <div style={{fontSize:28,fontWeight:800,color:scoreColor,lineHeight:1}}>{scoreLabel}</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>
+              {score <= 20 ? 'System is clear. Nice work.' : score <= 45 ? 'A few things need attention.' : score <= 70 ? 'Several things are building up.' : 'Things are piling up — start here.'}
+            </div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:42,fontWeight:800,color:scoreColor,opacity:0.7}}>{score}</div>
+            <div style={{fontSize:10,color:'var(--muted)'}}>/ 100</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Overdue */}
+      {overdue.length > 0 && (
+        <>
+          <div className="section-title" style={{color:'var(--red)'}}>⚠ Overdue ({overdue.length})</div>
+          {overdue.slice(0,3).map(t=>(
+            <div key={t.id} className="card-sm" style={{borderLeft:'3px solid var(--red)'}}>
+              <div className="name" style={{fontSize:13}}>{t.name}</div>
+              <div className="meta">Was due {fmtDate(t.due_date)}</div>
+            </div>
+          ))}
+          {overdue.length > 3 && <div className="meta" style={{padding:'4px 0 8px',textAlign:'center'}}>+{overdue.length-3} more overdue</div>}
+        </>
+      )}
+
+      {/* Due today */}
+      {dueToday.length > 0 && (
+        <>
+          <div className="section-title">Due today ({dueToday.length})</div>
+          {dueToday.map(t=>(
+            <div key={t.id} className="card-sm">
+              <div className="name" style={{fontSize:13}}>{t.name}</div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Next actions */}
+      {nextActions.length > 0 && (
+        <>
+          <div className="section-title">⚡ Next actions ({nextActions.length})</div>
+          {nextActions.slice(0,4).map(t=>(
+            <div key={t.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
+              <div className="name" style={{fontSize:13}}>{t.name}</div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Stale projects */}
+      {staleProjects.length > 0 && (
+        <>
+          <div className="section-title">Projects with no next action ({staleProjects.length})</div>
+          {staleProjects.slice(0,3).map(p=>(
+            <div key={p.id} className="card-sm" style={{borderLeft:'3px solid var(--amber)'}}>
+              <div className="name" style={{fontSize:13}}>{p.name}</div>
+              <div className="meta">No next action defined</div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Open decisions */}
+      {data.decisions.length > 0 && (
+        <>
+          <div className="section-title">Open decisions ({data.decisions.length})</div>
+          {data.decisions.slice(0,3).map(d=>(
+            <div key={d.id} className="card-sm">
+              <div className="name" style={{fontSize:13}}>{d.name}</div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Asset alerts */}
+      {urgentAssets.length > 0 && (
+        <>
+          <div className="section-title">Asset dates coming up ({urgentAssets.length})</div>
+          {urgentAssets.map(a=>{
+            const soon = isOverdue(a.expires_at)||isOverdue(a.mot_due_at);
+            return (
+              <div key={a.id} className="card-sm" style={{borderLeft:`3px solid ${soon?'var(--red)':'var(--amber)'}`}}>
+                <div className="name" style={{fontSize:13}}>{a.name}</div>
+                <div className="meta">
+                  {isOverdue(a.expires_at)&&`Expired ${fmtDate(a.expires_at)}`}
+                  {isDueSoon(a.expires_at)&&!isOverdue(a.expires_at)&&`Renews ${fmtDate(a.expires_at)}`}
+                  {isOverdue(a.mot_due_at)&&` · MOT overdue`}
+                  {isDueSoon(a.mot_due_at)&&!isOverdue(a.mot_due_at)&&` · MOT ${fmtDate(a.mot_due_at)}`}
+                  {isDueSoon(a.next_service_at)&&` · Service ${fmtDate(a.next_service_at)}`}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* All clear */}
+      {overdue.length===0 && dueToday.length===0 && staleProjects.length===0 && data.decisions.length===0 && urgentAssets.length===0 && (
+        <div className="empty" style={{marginTop:20}}>
+          <div className="empty-icon">✨</div>
+          <div style={{color:'var(--text)',fontWeight:500}}>System is clear</div>
+          <div className="meta" style={{marginTop:4}}>Nothing urgent. Use this time to work on what matters.</div>
+        </div>
+      )}
+
+      {/* Waiting for summary */}
+      {data.waiting.length > 0 && (
+        <div className="card" style={{marginTop:8,background:'rgba(124,92,252,0.06)',border:'1px solid rgba(124,92,252,0.2)'}}>
+          <div style={{fontSize:12,color:'var(--muted)'}}>
+            <strong style={{color:'var(--accent2)'}}>Waiting for ({data.waiting.length})</strong>
+            <div style={{marginTop:4}}>{data.waiting.slice(0,2).map(w=>`${w.name}${w.waiting_on?` — ${w.waiting_on}`:''}`).join(' · ')}{data.waiting.length>2?` · +${data.waiting.length-2} more`:''}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ROOT APP ──────────────────────────────────────────────────
+function App() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+  const [page, setPage] = useState('dashboard');
+
+  useEffect(()=>{
+    supabase.auth.getSession().then(({data:{session}})=>{
+      setUser(session?.user||null); setChecking(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user||null);
+    });
+    return ()=>subscription.unsubscribe();
+  },[]);
+
+  if (checking) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100dvh'}}><div className="spinner"/></div>;
+  if (!user) return <Login onLogin={setUser}/>;
+
+  const navItems = [
+    { id:'dashboard', label:'Dashboard', icon:'home' },
+    { id:'projects',  label:'Projects',  icon:'folder' },
+    { id:'tasks',     label:'Tasks',     icon:'check' },
+    { id:'capture',   label:'Capture',   icon:'zap' },
+    { id:'more',      label:'More',      icon:'layers' },
+  ];
+
+  const moreItems = [
+    { id:'areas',     label:'Areas & Roles', icon:'layers' },
+    { id:'decisions', label:'Decisions & Assets', icon:'box' },
+    { id:'reviews',   label:'Weekly Review', icon:'clock' },
+  ];
+
+  const renderPage = () => {
+    if (page==='dashboard') return <DashboardPage user={user} onNavigate={setPage}/>;
+    if (page==='projects')  return <ProjectsPage/>;
+    if (page==='tasks')     return <TasksPage/>;
+    if (page==='capture')   return <QuickCapturePage/>;
+    if (page==='areas')     return <AreasPage/>;
+    if (page==='decisions') return <DecisionsAssetsPage/>;
+    if (page==='reviews')   return <ReviewsPage/>;
+    if (page==='more') return (
+      <div className="page">
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>More</h1>
+        {moreItems.map(item=>(
+          <div key={item.id} className="card" style={{cursor:'pointer',marginBottom:8}} onClick={()=>setPage(item.id)}>
+            <div className="row-between">
+              <div className="row" style={{gap:12}}>
+                <div className="icon-area" style={{background:'var(--surface2)'}}><Icon name={item.icon} size={18}/></div>
+                <div className="name">{item.label}</div>
+              </div>
+              <Icon name="chevron" size={16} style={{color:'var(--muted)'}}/>
+            </div>
+          </div>
+        ))}
+        <div className="divider" style={{margin:'24px 0 16px'}}/>
+        <div className="card-sm" style={{cursor:'pointer'}} onClick={()=>supabase.auth.signOut()}>
+          <div className="row" style={{gap:10,color:'var(--muted)'}}>
+            <Icon name="logout" size={16}/><span style={{fontSize:14}}>Sign out</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <div className="topbar-logo">Lovejoy OS</div>
+        <div className="topbar-title">
+          {page==='dashboard'?'Dashboard':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
+        </div>
+        <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
+      </div>
+      <div className="main">
+        {renderPage()}
+      </div>
+      <div className="bottomnav">
+        {navItems.map(item=>(
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+            <Icon name={item.icon} size={22}/>
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
+HTMLEOF
