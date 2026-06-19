@@ -378,7 +378,14 @@ function ProjectsPage() {
   const openEdit = item => { setEditing(item); setForm({...item}); setModal(true); };
 
   const areaMap = Object.fromEntries(areas.map(a=>[a.id, a]));
-  const filtered = projects.filter(p => filter === 'all' ? true : p.status === filter);
+  const filtered = projects.filter(p => filter === 'all' ? true : filter === 'active' ? p.status === 'active' : p.status === filter);
+
+  const horizonMeta = {
+    critical:    { label:'Critical',    pill:'pill-red' },
+    active:      { label:'Active',      pill:'pill-blue' },
+    maintenance: { label:'Maintenance', pill:'pill-muted' },
+    someday:     { label:'Someday',     pill:'pill-purple' },
+  };
 
   if (loading) return <div className="spinner"/>;
 
@@ -386,7 +393,7 @@ function ProjectsPage() {
     <div className="page">
       <div className="row-between" style={{marginBottom:12}}>
         <h1 style={{fontSize:20,fontWeight:700}}>Projects</h1>
-        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({status:'active',priority:'medium'});setModal(true);}}>
+        <button className="btn btn-primary btn-sm" onClick={()=>{setEditing(null);setForm({status:'active',priority:'medium',horizon:'active'});setModal(true);}}>
           <Icon name="plus" size={14}/> New
         </button>
       </div>
@@ -401,28 +408,63 @@ function ProjectsPage() {
 
       {filtered.length === 0 && <div className="empty"><div className="empty-icon">📁</div>No {filter} projects</div>}
 
-      {filtered.map(p => {
-        const area = areaMap[p.area_id];
-        return (
-          <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
-            <div className="row-between">
-              <div style={{flex:1,minWidth:0}}>
-                <div className="name" style={{marginBottom:4}}>{p.name}</div>
-                {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
-                <div className="tag-row">
-                  {statusPill(p.status)}
-                  {priorityPill(p.priority)}
-                  {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
-                  {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
-                    {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
-                  </span>}
-                </div>
-              </div>
-              <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+      {/* When viewing active projects, group by horizon */}
+      {filter === 'active' ? (
+        ['critical','active','maintenance','someday'].map(h=>{
+          const group = filtered.filter(p=>(p.horizon||'active')===h);
+          if (group.length===0) return null;
+          return (
+            <div key={h}>
+              <div className="section-title">{horizonMeta[h].label} ({group.length})</div>
+              {group.map(p=>{
+                const area = areaMap[p.area_id];
+                return (
+                  <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
+                    <div className="row-between">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="name" style={{marginBottom:4}}>{p.name}</div>
+                        {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
+                        <div className="tag-row">
+                          {priorityPill(p.priority)}
+                          {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                          {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
+                            {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
+                          </span>}
+                        </div>
+                      </div>
+                      <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        );
-      })}
+          );
+        })
+      ) : (
+        filtered.map(p => {
+          const area = areaMap[p.area_id];
+          return (
+            <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
+              <div className="row-between">
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="name" style={{marginBottom:4}}>{p.name}</div>
+                  {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
+                  <div className="tag-row">
+                    {statusPill(p.status)}
+                    {p.horizon && <span className={`pill ${horizonMeta[p.horizon]?.pill||'pill-muted'}`}>{horizonMeta[p.horizon]?.label}</span>}
+                    {priorityPill(p.priority)}
+                    {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
+                    {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
+                      {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
+                    </span>}
+                  </div>
+                </div>
+                <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+              </div>
+            </div>
+          );
+        })
+      )}
 
       {modal && (
         <Modal title={editing?'Edit project':'New project'} onClose={()=>{setModal(false);setForm({});setEditing(null);}}>
@@ -432,6 +474,14 @@ function ProjectsPage() {
             <select className="input" value={form.area_id||''} onChange={e=>setForm(p=>({...p,area_id:e.target.value||null}))}>
               <option value="">No area</option>
               {areas.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label className="label">Horizon</label>
+            <select className="input" value={form.horizon||'active'} onChange={e=>setForm(p=>({...p,horizon:e.target.value}))}>
+              <option value="critical">Critical — top focus, watched closely</option>
+              <option value="active">Active — moving, needs a next action</option>
+              <option value="maintenance">Maintenance — ticking over, low attention</option>
+              <option value="someday">Someday — parked, won't nag you</option>
             </select>
           </div>
           <div className="row" style={{gap:8,marginBottom:14}}>
@@ -874,7 +924,7 @@ function QuickCapturePage() {
       task: { status:'todo', priority:'medium' },
       waiting: { status:'open' },
       decision: { status:'open' },
-      project: { status:'active', priority:'medium' },
+      project: { status:'active', priority:'medium', horizon:'active' },
     };
     await supabase.from(tables[type]).insert({...defaults[type], ...form});
     setSaving(false); setSaved(true); setForm({priority:'medium'});
@@ -961,46 +1011,33 @@ function QuickCapturePage() {
   );
 }
 
-// ── REVIEWS PAGE ──────────────────────────────────────────────
-function ReviewsPage() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
+// ── SHARED REVIEW PROMPT BUILDER ──────────────────────────────
+function buildReviewPrompt(data) {
+  if (!data) return '';
+  const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
+  const dueToday = data.tasks.filter(t=>t.due_date===data.today);
+  const nextActions = data.tasks.filter(t=>t.is_next_action);
+  const staleProjects = data.projects
+    .filter(p=>['critical','active'].includes(p.horizon||'active'))
+    .filter(p => !data.tasks.some(t=>t.project_id===p.id&&t.is_next_action));
+  const staleDecisions = data.decisions.filter(d=>{
+    const age = Math.floor((new Date(data.today)-new Date(d.created_at))/86400000);
+    return age >= 7;
+  });
+  const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
+  const critical = data.projects.filter(p=>p.horizon==='critical');
 
-  const load = async () => {
-    const today = new Date().toISOString().split('T')[0];
-    const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
-    const [tasks, waiting, decisions, projects, assets] = await Promise.all([
-      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
-      supabase.from('waiting_for').select('*').eq('status','open'),
-      supabase.from('decisions').select('*').eq('status','open'),
-      supabase.from('projects').select('*').eq('status','active'),
-      supabase.from('assets').select('*').eq('status','active'),
-    ]);
-    setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
-    setLoading(false);
-  };
-  useEffect(()=>{ load(); },[]);
-
-  const generatePrompt = () => {
-    if (!data) return '';
-    const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
-    const dueToday = data.tasks.filter(t=>t.due_date===data.today);
-    const nextActions = data.tasks.filter(t=>t.is_next_action);
-    const staleProjects = data.projects.filter(p => {
-      const hasNext = data.tasks.some(t=>t.project_id===p.id&&t.is_next_action);
-      return !hasNext;
-    });
-    const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
-
-    return `# Lovejoy OS — Weekly Review Brief
+  return `# Lovejoy OS — Weekly Review Brief
 Generated: ${new Date().toLocaleDateString('en-GB', {weekday:'long',day:'numeric',month:'long',year:'numeric'})}
 
 ## System snapshot
 - Open tasks: ${data.tasks.length}
-- Active projects: ${data.projects.length}
+- Active projects: ${data.projects.length} (${critical.length} critical)
 - Open waiting for: ${data.waiting.length}
 - Open decisions: ${data.decisions.length}
+
+## Critical projects (${critical.length})
+${critical.length===0?'None flagged critical.':critical.map(p=>`- ${p.name}${p.description?`: ${p.description}`:''}`).join('\n')}
 
 ## Overdue tasks (${overdue.length})
 ${overdue.length===0?'None overdue.':overdue.map(t=>`- ${t.name}${t.due_date?` (was due ${fmtDate(t.due_date)})`:''}${t.notes?`\n  Context: ${t.notes}`:''}`).join('\n')}
@@ -1011,17 +1048,17 @@ ${dueToday.length===0?'Nothing due today.':dueToday.map(t=>`- ${t.name}`).join('
 ## Next actions (${nextActions.length})
 ${nextActions.length===0?'No next actions flagged — consider reviewing your projects.':nextActions.map(t=>`- ${t.name}`).join('\n')}
 
-## Projects with no next action (${staleProjects.length})
+## Critical/active projects with no next action (${staleProjects.length})
 ${staleProjects.length===0?'All active projects have a next action.':staleProjects.map(p=>`- ${p.name}${p.description?`: ${p.description}`:''}`).join('\n')}
 
 ## Open waiting for (${data.waiting.length})
 ${data.waiting.length===0?'Nothing outstanding.':data.waiting.map(w=>`- ${w.name}${w.waiting_on?` — waiting on ${w.waiting_on}`:''}${w.due_date?` (expected ${fmtDate(w.due_date)})`:''}`).join('\n')}
 
-## Open decisions (${data.decisions.length})
-${data.decisions.length===0?'No open decisions.':data.decisions.map(d=>`- ${d.name}${d.context?`\n  Context: ${d.context}`:''}${d.options?`\n  Options: ${d.options}`:''}`).join('\n')}
+## Decisions open 7+ days (${staleDecisions.length})
+${staleDecisions.length===0?'No stale decisions.':staleDecisions.map(d=>`- ${d.name}${d.context?`\n  Context: ${d.context}`:''}${d.options?`\n  Options: ${d.options}`:''}`).join('\n')}
 
 ## Asset alerts (${urgentAssets.length})
-${urgentAssets.length===0?'No upcoming asset dates in the next 30 days.':urgentAssets.map(a=>{
+${urgentAssets.length===0?'No upcoming asset dates.':urgentAssets.map(a=>{
   const alerts=[];
   if(isOverdue(a.expires_at))alerts.push(`EXPIRED ${fmtDate(a.expires_at)}`);
   else if(isDueSoon(a.expires_at))alerts.push(`renews ${fmtDate(a.expires_at)}`);
@@ -1043,7 +1080,30 @@ Please act as my personal Chief of Staff and help me with my weekly review. Usin
 5. Any patterns or concerns you notice in my system?
 
 Be direct and practical. I want clear recommendations, not summaries of what I already know.`;
+}
+
+// ── REVIEWS PAGE ──────────────────────────────────────────────
+function ReviewsPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
+    const [tasks, waiting, decisions, projects, assets] = await Promise.all([
+      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
+      supabase.from('waiting_for').select('*').eq('status','open'),
+      supabase.from('decisions').select('*').eq('status','open'),
+      supabase.from('projects').select('*').eq('status','active'),
+      supabase.from('assets').select('*').eq('status','active'),
+    ]);
+    setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
+    setLoading(false);
   };
+  useEffect(()=>{ load(); },[]);
+
+  const generatePrompt = () => buildReviewPrompt(data);
 
   const copyPrompt = () => {
     navigator.clipboard.writeText(generatePrompt());
@@ -1100,10 +1160,106 @@ Be direct and practical. I want clear recommendations, not summaries of what I a
   );
 }
 
+// ── ATTENTION ENGINE ──────────────────────────────────────────
+// Pure function: takes system data, returns a ranked list of
+// items that need attention, most urgent first.
+const DECISION_STALE_DAYS = 7;          // configurable threshold
+const CHASE_AFTER_DAYS = 0;             // waiting-for is chase-worthy once due
+const DEADLINE_HORIZON_DAYS = 14;       // upcoming deadline window
+
+function buildAttention(data) {
+  const items = [];
+  const today = data.today;
+
+  // Horizons that the system actively manages. Maintenance/someday
+  // projects are deliberately left alone — they should never nag.
+  const activeHorizons = ['critical','active'];
+
+  // 1. Overdue tasks — highest severity
+  data.tasks.filter(t=>isOverdue(t.due_date)).forEach(t=>{
+    const days = Math.abs(daysUntil(t.due_date));
+    items.push({
+      id:'task-'+t.id, kind:'Overdue task', name:t.name,
+      detail:`Was due ${fmtDate(t.due_date)} · ${days} day${days!==1?'s':''} ago`,
+      severity: 100 + days + (t.priority==='high'?20:t.priority==='medium'?10:0),
+      colour:'var(--red)', goto:'tasks',
+    });
+  });
+
+  // 2. Waiting For due for chase
+  data.waiting.filter(w=>w.due_date && daysUntil(w.due_date) <= CHASE_AFTER_DAYS && !w.chased_at).forEach(w=>{
+    const overdueChase = isOverdue(w.due_date);
+    items.push({
+      id:'wait-'+w.id, kind:'Chase needed', name:w.name,
+      detail:`${w.waiting_on?`Waiting on ${w.waiting_on} · `:''}${overdueChase?'Past expected date':'Due today'}`,
+      severity: 80 + (overdueChase?Math.abs(daysUntil(w.due_date)):0),
+      colour:'var(--accent2)', goto:'tasks',
+    });
+  });
+
+  // 3. Upcoming deadlines (tasks + projects + asset dates within window)
+  data.tasks.filter(t=>{ const n=daysUntil(t.due_date); return n!==null && n>=0 && n<=DEADLINE_HORIZON_DAYS; }).forEach(t=>{
+    const n = daysUntil(t.due_date);
+    items.push({
+      id:'due-'+t.id, kind:'Upcoming deadline', name:t.name,
+      detail:`Due ${n===0?'today':n===1?'tomorrow':`in ${n} days`} · ${fmtDate(t.due_date)}`,
+      severity: 60 - n + (t.priority==='high'?15:0),
+      colour:'var(--amber)', goto:'tasks',
+    });
+  });
+  data.assets.forEach(a=>{
+    const checks = [
+      {date:a.expires_at, label:'Renews'}, {date:a.mot_due_at, label:'MOT due'},
+      {date:a.next_service_at, label:'Service due'}, {date:a.warranty_until, label:'Warranty ends'},
+    ];
+    checks.forEach(c=>{
+      const n = daysUntil(c.date);
+      if (c.date && (isOverdue(c.date) || (n>=0 && n<=DEADLINE_HORIZON_DAYS*2))) {
+        items.push({
+          id:`asset-${a.id}-${c.label}`, kind:'Asset date', name:a.name,
+          detail:`${c.label} ${isOverdue(c.date)?`overdue (${fmtDate(c.date)})`:fmtDate(c.date)}`,
+          severity: isOverdue(c.date) ? 85+Math.abs(n) : 55-Math.floor(n/2),
+          colour: isOverdue(c.date)?'var(--red)':'var(--amber)', goto:'decisions',
+        });
+      }
+    });
+  });
+
+  // 4. Critical/Active projects with no next action
+  data.projects
+    .filter(p=>activeHorizons.includes(p.horizon||'active'))
+    .filter(p=>!data.tasks.some(t=>t.project_id===p.id && t.is_next_action))
+    .forEach(p=>{
+      items.push({
+        id:'proj-'+p.id, kind:'No next action', name:p.name,
+        detail:`${p.horizon==='critical'?'Critical':'Active'} project with nothing teed up`,
+        severity: (p.horizon==='critical'?70:45),
+        colour:'var(--amber)', goto:'projects',
+      });
+    });
+
+  // 5. Open decisions older than threshold
+  data.decisions.forEach(d=>{
+    const age = Math.floor((new Date(today) - new Date(d.created_at)) / 86400000);
+    if (age >= DECISION_STALE_DAYS) {
+      items.push({
+        id:'dec-'+d.id, kind:'Stale decision', name:d.name,
+        detail:`Open for ${age} days · needs deciding`,
+        severity: 50 + Math.min(age, 30),
+        colour:'var(--accent)', goto:'decisions',
+      });
+    }
+  });
+
+  return items.sort((a,b)=>b.severity-a.severity);
+}
+
 // ── DASHBOARD ─────────────────────────────────────────────────
 function DashboardPage({ user, onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const load = async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -1119,145 +1275,73 @@ function DashboardPage({ user, onNavigate }) {
   };
   useEffect(()=>{ load(); },[]);
 
+  const copyReview = () => {
+    const prompt = buildReviewPrompt(data);
+    navigator.clipboard.writeText(prompt);
+    setCopied(true);
+    setTimeout(()=>setCopied(false), 2500);
+  };
+
   if (loading) return <div className="spinner"/>;
 
-  const overdue = data.tasks.filter(t=>isOverdue(t.due_date));
-  const dueToday = data.tasks.filter(t=>t.due_date===data.today);
-  const nextActions = data.tasks.filter(t=>t.is_next_action);
-  const staleProjects = data.projects.filter(p => !data.tasks.some(t=>t.project_id===p.id&&t.is_next_action));
-  const urgentAssets = data.assets.filter(a=>isOverdue(a.expires_at)||isOverdue(a.mot_due_at)||isDueSoon(a.expires_at)||isDueSoon(a.mot_due_at)||isDueSoon(a.next_service_at));
-
-  // Cognitive load score: 0–100, lower is better
-  const score = Math.min(100, overdue.length*15 + staleProjects.length*8 + data.decisions.length*5 + urgentAssets.length*10);
-  const scoreLabel = score <= 20 ? 'Clear' : score <= 45 ? 'Manageable' : score <= 70 ? 'Busy' : 'Overloaded';
-  const scoreColor = score <= 20 ? 'var(--green)' : score <= 45 ? 'var(--accent)' : score <= 70 ? 'var(--amber)' : 'var(--red)';
+  const attention = buildAttention(data);
+  const visible = showAll ? attention : attention.slice(0, 6);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
   return (
     <div className="page">
-      <div style={{marginBottom:20}}>
+      <div style={{marginBottom:18}}>
         <div style={{fontSize:13,color:'var(--muted)'}}>{greeting}</div>
         <div style={{fontSize:22,fontWeight:700,letterSpacing:'-0.5px'}}>Freddie</div>
       </div>
 
-      {/* Cognitive load */}
-      <div className="card" style={{background:`linear-gradient(135deg, ${scoreColor}18, transparent)`,border:`1px solid ${scoreColor}40`,marginBottom:16}}>
-        <div className="row-between">
-          <div>
-            <div style={{fontSize:11,color:'var(--muted)',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em'}}>Cognitive load</div>
-            <div style={{fontSize:28,fontWeight:800,color:scoreColor,lineHeight:1}}>{scoreLabel}</div>
-            <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>
-              {score <= 20 ? 'System is clear. Nice work.' : score <= 45 ? 'A few things need attention.' : score <= 70 ? 'Several things are building up.' : 'Things are piling up — start here.'}
-            </div>
-          </div>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:42,fontWeight:800,color:scoreColor,opacity:0.7}}>{score}</div>
-            <div style={{fontSize:10,color:'var(--muted)'}}>/ 100</div>
-          </div>
-        </div>
+      {/* Weekly review button */}
+      <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',marginBottom:18,padding:'11px'}} onClick={copyReview}>
+        {copied ? '✓ Review brief copied' : '📋 Copy weekly review brief'}
+      </button>
+
+      {/* Attention Required */}
+      <div className="row-between" style={{marginBottom:8}}>
+        <div className="section-title" style={{margin:0}}>Attention required</div>
+        {attention.length>0 && <span className="pill pill-muted">{attention.length}</span>}
       </div>
 
-      {/* Overdue */}
-      {overdue.length > 0 && (
-        <>
-          <div className="section-title" style={{color:'var(--red)'}}>⚠ Overdue ({overdue.length})</div>
-          {overdue.slice(0,3).map(t=>(
-            <div key={t.id} className="card-sm" style={{borderLeft:'3px solid var(--red)'}}>
-              <div className="name" style={{fontSize:13}}>{t.name}</div>
-              <div className="meta">Was due {fmtDate(t.due_date)}</div>
-            </div>
-          ))}
-          {overdue.length > 3 && <div className="meta" style={{padding:'4px 0 8px',textAlign:'center'}}>+{overdue.length-3} more overdue</div>}
-        </>
-      )}
-
-      {/* Due today */}
-      {dueToday.length > 0 && (
-        <>
-          <div className="section-title">Due today ({dueToday.length})</div>
-          {dueToday.map(t=>(
-            <div key={t.id} className="card-sm">
-              <div className="name" style={{fontSize:13}}>{t.name}</div>
-            </div>
-          ))}
-        </>
-      )}
-
-      {/* Next actions */}
-      {nextActions.length > 0 && (
-        <>
-          <div className="section-title">⚡ Next actions ({nextActions.length})</div>
-          {nextActions.slice(0,4).map(t=>(
-            <div key={t.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
-              <div className="name" style={{fontSize:13}}>{t.name}</div>
-            </div>
-          ))}
-        </>
-      )}
-
-      {/* Stale projects */}
-      {staleProjects.length > 0 && (
-        <>
-          <div className="section-title">Projects with no next action ({staleProjects.length})</div>
-          {staleProjects.slice(0,3).map(p=>(
-            <div key={p.id} className="card-sm" style={{borderLeft:'3px solid var(--amber)'}}>
-              <div className="name" style={{fontSize:13}}>{p.name}</div>
-              <div className="meta">No next action defined</div>
-            </div>
-          ))}
-        </>
-      )}
-
-      {/* Open decisions */}
-      {data.decisions.length > 0 && (
-        <>
-          <div className="section-title">Open decisions ({data.decisions.length})</div>
-          {data.decisions.slice(0,3).map(d=>(
-            <div key={d.id} className="card-sm">
-              <div className="name" style={{fontSize:13}}>{d.name}</div>
-            </div>
-          ))}
-        </>
-      )}
-
-      {/* Asset alerts */}
-      {urgentAssets.length > 0 && (
-        <>
-          <div className="section-title">Asset dates coming up ({urgentAssets.length})</div>
-          {urgentAssets.map(a=>{
-            const soon = isOverdue(a.expires_at)||isOverdue(a.mot_due_at);
-            return (
-              <div key={a.id} className="card-sm" style={{borderLeft:`3px solid ${soon?'var(--red)':'var(--amber)'}`}}>
-                <div className="name" style={{fontSize:13}}>{a.name}</div>
-                <div className="meta">
-                  {isOverdue(a.expires_at)&&`Expired ${fmtDate(a.expires_at)}`}
-                  {isDueSoon(a.expires_at)&&!isOverdue(a.expires_at)&&`Renews ${fmtDate(a.expires_at)}`}
-                  {isOverdue(a.mot_due_at)&&` · MOT overdue`}
-                  {isDueSoon(a.mot_due_at)&&!isOverdue(a.mot_due_at)&&` · MOT ${fmtDate(a.mot_due_at)}`}
-                  {isDueSoon(a.next_service_at)&&` · Service ${fmtDate(a.next_service_at)}`}
-                </div>
-              </div>
-            );
-          })}
-        </>
-      )}
-
-      {/* All clear */}
-      {overdue.length===0 && dueToday.length===0 && staleProjects.length===0 && data.decisions.length===0 && urgentAssets.length===0 && (
-        <div className="empty" style={{marginTop:20}}>
+      {attention.length === 0 && (
+        <div className="empty" style={{marginTop:12}}>
           <div className="empty-icon">✨</div>
-          <div style={{color:'var(--text)',fontWeight:500}}>System is clear</div>
-          <div className="meta" style={{marginTop:4}}>Nothing urgent. Use this time to work on what matters.</div>
+          <div style={{color:'var(--text)',fontWeight:500}}>Nothing needs you right now</div>
+          <div className="meta" style={{marginTop:4}}>Everything's on track. Good time to do focused work.</div>
         </div>
       )}
 
-      {/* Waiting for summary */}
+      {visible.map(item=>(
+        <div key={item.id} className="card-sm" style={{borderLeft:`3px solid ${item.colour}`,cursor:'pointer'}} onClick={()=>onNavigate(item.goto)}>
+          <div className="row-between">
+            <div style={{flex:1,minWidth:0}}>
+              <div className="row" style={{gap:6,marginBottom:2}}>
+                <span style={{fontSize:10,fontWeight:600,color:item.colour,textTransform:'uppercase',letterSpacing:'0.05em'}}>{item.kind}</span>
+              </div>
+              <div className="name" style={{fontSize:13}}>{item.name}</div>
+              <div className="meta">{item.detail}</div>
+            </div>
+            <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+          </div>
+        </div>
+      ))}
+
+      {attention.length > 6 && (
+        <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={()=>setShowAll(s=>!s)}>
+          {showAll ? 'Show less' : `Show ${attention.length-6} more`}
+        </button>
+      )}
+
+      {/* Waiting for summary (informational, not urgent) */}
       {data.waiting.length > 0 && (
-        <div className="card" style={{marginTop:8,background:'rgba(124,92,252,0.06)',border:'1px solid rgba(124,92,252,0.2)'}}>
+        <div className="card" style={{marginTop:16,background:'rgba(124,92,252,0.06)',border:'1px solid rgba(124,92,252,0.2)'}}>
           <div style={{fontSize:12,color:'var(--muted)'}}>
-            <strong style={{color:'var(--accent2)'}}>Waiting for ({data.waiting.length})</strong>
+            <strong style={{color:'var(--accent2)'}}>Also waiting for ({data.waiting.length})</strong>
             <div style={{marginTop:4}}>{data.waiting.slice(0,2).map(w=>`${w.name}${w.waiting_on?` — ${w.waiting_on}`:''}`).join(' · ')}{data.waiting.length>2?` · +${data.waiting.length-2} more`:''}</div>
           </div>
         </div>
