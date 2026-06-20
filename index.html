@@ -305,14 +305,47 @@ async function applyProposedAction(type, p) {
     }
 
     if (type === 'create_calendar_block') {
-      // Calendar write comes in Deploy 3 via the calendar function.
-      return { ok:false, note:'Calendar blocks activate in the next build.' };
+      // Writes a tagged event to the shared calendar via the calendar function.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return { ok:false, note:'Not signed in.' };
+      const res = await fetch(CALENDAR_FN_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': SUPABASE_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'create_block', block: {
+          title: p.title, block_type: p.block_type || 'focus',
+          date: p.date, start_time: p.start_time, end_time: p.end_time,
+        }}),
+      });
+      const out = await res.json();
+      if (out.error) return { ok:false, note: out.detail ? `${out.error}: ${String(out.detail).slice(0,160)}` : (out.message||out.error) };
+      if (out.created) return { ok:true, ref: out.created.id };
+      return { ok:false, note:'Unexpected calendar response.' };
     }
 
     return { ok:false, note:'Unknown action type' };
   } catch (e) {
     return { ok:false, note:String(e) };
   }
+}
+
+// Fetch today's most recent stored Plan My Day brief (does NOT call Claude).
+async function fetchTodaysBrief() {
+  const { data } = await supabase.from('reviews')
+    .select('*')
+    .eq('review_type', 'daily')
+    .eq('title', 'Plan My Day')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  // Only count it as "today's" if it was created on the local calendar day
+  const created = new Date(data.created_at);
+  if (localDateKey(created) !== localDateKey()) return null;
+  return data;
 }
 
 // Call Helm (the embedded assistant) with a request type.
@@ -1721,10 +1754,26 @@ function HelmPage() {
   const [result, setResult] = useState(null);
   const [decisions, setDecisions] = useState([]);
   const [pickDecision, setPickDecision] = useState(false);
+  const [history, setHistory] = useState(null);   // null=not loaded, []=loaded
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(()=>{
     supabase.from('decisions').select('id,name').eq('status','open').then(({data})=>setDecisions(data||[]));
   },[]);
+
+  const loadHistory = async () => {
+    const { data } = await supabase.from('reviews')
+      .select('id,title,review_type,notes,created_at')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setHistory(data || []);
+  };
+
+  const toggleHistory = () => {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next && history === null) loadHistory();
+  };
 
   const run = async (type, extra={}) => {
     setActiveType(type); setLoading(true); setResult(null); setPickDecision(false);
@@ -1763,6 +1812,28 @@ function HelmPage() {
           </button>
         ))}
       </div>
+
+      {/* Helm History toggle */}
+      <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginBottom:16}} onClick={toggleHistory}>
+        {showHistory ? 'Hide history' : `${ASSISTANT_NAME} History`}
+      </button>
+
+      {showHistory && (
+        <div className="card" style={{marginBottom:16}}>
+          <div className="section-title" style={{marginTop:0}}>Recent {ASSISTANT_NAME} briefs</div>
+          {history === null && <div className="meta">Loading…</div>}
+          {history?.length === 0 && <div className="meta">No briefs yet. Run one above.</div>}
+          {history?.map(h=>(
+            <div key={h.id} className="card-sm" style={{background:'var(--surface2)'}}>
+              <div className="row-between">
+                <div className="name" style={{fontSize:13}}>{h.title}</div>
+                <span className="meta">{fmtDate(h.created_at)} {fmtTime(h.created_at)}</span>
+              </div>
+              {h.notes && <div className="meta" style={{marginTop:3}}>{h.notes.slice(0,140)}{h.notes.length>140?'…':''}</div>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Decision picker for pressure test */}
       {pickDecision && (
@@ -2094,9 +2165,11 @@ function DashboardPage({ user, onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [todayEvents, setTodayEvents] = useState([]);
   const [calState, setCalState] = useState(null); // null | 'ok' | error code
+  const [brief, setBrief] = useState(undefined);   // undefined=loading, null=none, object=brief
+  const [briefBusy, setBriefBusy] = useState(false);
+  const [showBriefDetail, setShowBriefDetail] = useState(false);
 
   const load = async () => {
     const today = localDateKey();
@@ -2117,15 +2190,30 @@ function DashboardPage({ user, onNavigate }) {
       }
       setCalState(r?.error || 'ok');
     });
+    // Today's stored Helm brief — READ ONLY, never calls Claude on load
+    fetchTodaysBrief().then(b=>setBrief(b));
   };
   useEffect(()=>{ load(); },[]);
 
-  const copyReview = () => {
-    const prompt = buildReviewPrompt(data);
-    navigator.clipboard.writeText(prompt);
-    setCopied(true);
-    setTimeout(()=>setCopied(false), 2500);
+  // Explicit Helm calls only — on button press
+  const runPlanMyDay = async () => {
+    setBriefBusy(true);
+    await callHelm('plan_my_day');           // generates + stores brief in reviews
+    const b = await fetchTodaysBrief();
+    setBrief(b); setBriefBusy(false);
   };
+
+  const archiveBrief = async () => {
+    if (!brief) return;
+    await supabase.from('reviews').update({ title: 'Plan My Day (archived)' }).eq('id', brief.id);
+    setBrief(null); setShowBriefDetail(false);
+  };
+
+  // Parse the stored structured brief (saved as JSON in prompt_used)
+  const parsedBrief = (() => {
+    if (!brief) return null;
+    try { return JSON.parse(brief.prompt_used); } catch { return { summary: brief.notes || '' }; }
+  })();
 
   if (loading) return <div className="spinner"/>;
 
@@ -2172,10 +2260,55 @@ function DashboardPage({ user, onNavigate }) {
         </div>
       ) : null}
 
-      {/* Weekly review button */}
-      <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',marginBottom:18,padding:'11px'}} onClick={copyReview}>
-        {copied ? '✓ Review brief copied' : '📋 Copy weekly review brief'}
-      </button>
+      {/* Helm Brief card */}
+      <div className="card" style={{marginBottom:18,border:'1px solid var(--border)'}}>
+        <div className="row-between" style={{marginBottom:8}}>
+          <div className="section-title" style={{margin:0}}>🧭 {ASSISTANT_NAME} Brief</div>
+          {parsedBrief && <span className="meta">{brief && fmtTime(brief.created_at)}</span>}
+        </div>
+
+        {brief === undefined ? (
+          <div className="meta">Loading…</div>
+        ) : !parsedBrief ? (
+          <div>
+            <div className="meta" style={{marginBottom:10}}>No {ASSISTANT_NAME} brief yet today.</div>
+            <button className="btn btn-primary btn-sm" style={{width:'100%',justifyContent:'center'}} disabled={briefBusy} onClick={runPlanMyDay}>
+              {briefBusy ? `${ASSISTANT_NAME} is thinking…` : `Plan my day with ${ASSISTANT_NAME}`}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{fontSize:13,lineHeight:1.55,marginBottom:showBriefDetail?12:10}}>{parsedBrief.summary}</div>
+
+            {showBriefDetail && (
+              <div style={{marginBottom:10}}>
+                {parsedBrief.next_actions?.length>0 && (
+                  <>
+                    <div className="section-title">Recommended next actions</div>
+                    {parsedBrief.next_actions.map((a,i)=>(
+                      <div key={i} style={{fontSize:13,lineHeight:1.5,marginBottom:5,display:'flex',gap:8}}><span style={{color:'var(--accent)'}}>{i+1}.</span><span>{a}</span></div>
+                    ))}
+                  </>
+                )}
+                {parsedBrief.attention?.length>0 && (
+                  <>
+                    <div className="section-title">What needs attention</div>
+                    {parsedBrief.attention.map((a,i)=>(
+                      <div key={i} style={{fontSize:13,lineHeight:1.5,marginBottom:5,display:'flex',gap:8}}><span style={{color:'var(--amber)'}}>•</span><span>{a}</span></div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setShowBriefDetail(s=>!s)}>{showBriefDetail?'Hide':'View latest brief'}</button>
+              <button className="btn btn-ghost btn-sm" disabled={briefBusy} onClick={runPlanMyDay}>{briefBusy?'Refreshing…':'Refresh '+ASSISTANT_NAME}</button>
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={archiveBrief}>Archive</button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Attention Required */}
       <div className="row-between" style={{marginBottom:8}}>
