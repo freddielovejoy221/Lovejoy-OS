@@ -396,6 +396,14 @@ const fmtTime = iso => {
   const d = new Date(iso);
   return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 };
+// Returns a local-time YYYY-MM-DD key (NOT UTC). Using toISOString() would
+// roll over to the wrong day late at night, so we build it from local parts.
+const localDateKey = (date = new Date()) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 const fmtDayLabel = d => {
   const date = new Date(d);
   const today = new Date(); today.setHours(0,0,0,0);
@@ -427,7 +435,7 @@ function findGaps(dayEvents, dayKey, workStart = 8, workEnd = 22, minGapMins = 3
   let cursor = new Date(dayStart);
   // Don't suggest gaps in the past for today
   const now = new Date();
-  if (cursor < now && dayKey === now.toISOString().split('T')[0]) cursor = new Date(now);
+  if (cursor < now && dayKey === localDateKey(now)) cursor = new Date(now);
   timed.forEach(ev => {
     if (ev.start > cursor) {
       const mins = (ev.start - cursor) / 60000;
@@ -1383,7 +1391,7 @@ function ReviewsPage() {
   const [copied, setCopied] = useState(false);
 
   const load = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateKey();
     const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
     const [tasks, waiting, decisions, projects, assets] = await Promise.all([
       supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
@@ -1884,12 +1892,12 @@ function CalendarPage() {
 
   const events = result?.events || [];
   const byDay = groupEventsByDay(events);
-  const todayKey = new Date().toISOString().split('T')[0];
+  const todayKey = localDateKey();
   const todayEvents = (byDay[todayKey] || []).sort((a,b)=> (a.start||'').localeCompare(b.start||''));
 
-  // Build 7-day ordered list of day keys
+  // Build 7-day ordered list of day keys (local time)
   const dayKeys = [];
-  for (let i=0;i<7;i++){ const d=new Date(); d.setDate(d.getDate()+i); dayKeys.push(d.toISOString().split('T')[0]); }
+  for (let i=0;i<7;i++){ const d=new Date(); d.setDate(d.getDate()+i); dayKeys.push(localDateKey(d)); }
 
   return (
     <div className="page">
@@ -2091,7 +2099,7 @@ function DashboardPage({ user, onNavigate }) {
   const [calState, setCalState] = useState(null); // null | 'ok' | error code
 
   const load = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateKey();
     const [tasks, waiting, decisions, projects, assets] = await Promise.all([
       supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
       supabase.from('waiting_for').select('*').eq('status','open'),
@@ -2104,7 +2112,7 @@ function DashboardPage({ user, onNavigate }) {
     // Calendar loads separately so a slow/absent calendar never blocks the dashboard
     fetchCalendarEvents(1).then(r=>{
       if (r && r.events) {
-        const todayKey = new Date().toISOString().split('T')[0];
+        const todayKey = localDateKey();
         setTodayEvents(r.events.filter(e=>(e.start||'').startsWith(todayKey)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
       }
       setCalState(r?.error || 'ok');
