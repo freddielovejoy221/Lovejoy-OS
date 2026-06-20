@@ -536,7 +536,7 @@ function Login({ onLogin }) {
           Continue with Google
         </button>
         <div style={{fontSize:11,color:'var(--muted)',marginTop:10,textAlign:'center',lineHeight:1.5}}>
-          Signing in with Google also connects your calendar (read-only).
+          Signing in with Google connects your calendar and lets Helm create blocks.
         </div>
       </div>
     </div>
@@ -1495,6 +1495,100 @@ function ReviewsPage() {
   );
 }
 
+// ── DEBUG PAGE ────────────────────────────────────────────────
+function DebugPage() {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(new Set());
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await supabase.from('helm_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    setLogs(data || []);
+    setLoading(false);
+  };
+
+  useEffect(()=>{ load(); },[]);
+
+  const clearLogs = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase.from('helm_logs').delete().eq('user_id', user.id);
+    setLogs([]);
+  };
+
+  const toggle = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const statusColour = s => s==='error'?'var(--red)':s==='warning'?'var(--amber)':'var(--green)';
+  const statusIcon   = s => s==='error'?'✗':s==='warning'?'⚠':'✓';
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:4}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Debug Log</h1>
+        <div className="row" style={{gap:8}}>
+          <button className="btn btn-ghost btn-sm" onClick={load}>↻ Refresh</button>
+          <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={clearLogs}>Clear</button>
+        </div>
+      </div>
+      <div className="meta" style={{marginBottom:14}}>Last 50 Edge Function calls. Tap any entry to see full detail.</div>
+
+      {logs.length === 0 && (
+        <div className="empty"><div className="empty-icon">🪵</div>No logs yet — logs appear here after the first Helm or Calendar action.</div>
+      )}
+
+      {logs.map(log => {
+        const isOpen = expanded.has(log.id);
+        const colour = statusColour(log.status);
+        return (
+          <div key={log.id} className="card-sm" style={{marginBottom:6,borderLeft:`3px solid ${colour}`,cursor:'pointer'}} onClick={()=>toggle(log.id)}>
+            <div className="row-between">
+              <div className="row" style={{gap:6,flex:1,minWidth:0}}>
+                <span style={{fontSize:12,color:colour,flexShrink:0}}>{statusIcon(log.status)}</span>
+                <span style={{fontSize:12,fontWeight:600,flexShrink:0}}>{log.function_name}</span>
+                {log.action && <span className="pill pill-muted" style={{fontSize:10}}>{log.action.replace(/_/g,' ')}</span>}
+              </div>
+              <div className="row" style={{gap:8,flexShrink:0,marginLeft:8}}>
+                {log.duration_ms != null && <span className="meta">{log.duration_ms}ms</span>}
+                <span className="meta">{fmtTime(log.created_at)}</span>
+              </div>
+            </div>
+
+            {log.error_code && (
+              <div style={{fontSize:11,color:'var(--red)',marginTop:3,fontFamily:'monospace'}}>{log.error_code}</div>
+            )}
+
+            {log.meta && Object.keys(log.meta).length>0 && (
+              <div className="meta" style={{marginTop:2}}>
+                {Object.entries(log.meta).map(([k,v])=>`${k}: ${v}`).join(' · ')}
+              </div>
+            )}
+
+            {isOpen && log.error_detail && (
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:8,wordBreak:'break-all',lineHeight:1.5,background:'var(--bg)',padding:8,borderRadius:6,fontFamily:'monospace'}}>
+                {log.error_detail}
+              </div>
+            )}
+
+            {isOpen && !log.error_detail && (
+              <div className="meta" style={{marginTop:6}}>No error detail. Created at {new Date(log.created_at).toLocaleString('en-GB', {timeZone:'Europe/London'})}.</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── HELM SETTINGS PAGE ────────────────────────────────────────
 function HelmSettingsPage() {
   const [s, setS] = useState(null);
@@ -1588,7 +1682,8 @@ function HelmSettingsPage() {
       <div className="card">
         <div className="section-title" style={{marginTop:0}}>Calendar behaviour</div>
         <Segmented label="Calendar for Helm-created blocks" k="calendar_target" options={[
-          {v:'shared',label:'Shared calendar'},{v:'primary',label:'My primary'},
+          {v:'shared',label:'Helm calendar (recommended)'},
+          {v:'primary',label:'Primary calendar'},
         ]}/>
         <div style={{marginTop:4}}>
           <Toggle label="Allow focus blocks" k="allow_focus_blocks"/>
@@ -1756,6 +1851,7 @@ function HelmPage() {
   const [pickDecision, setPickDecision] = useState(false);
   const [history, setHistory] = useState(null);   // null=not loaded, []=loaded
   const [showHistory, setShowHistory] = useState(false);
+  const [expandedHistory, setExpandedHistory] = useState(new Set());
 
   useEffect(()=>{
     supabase.from('decisions').select('id,name').eq('status','open').then(({data})=>setDecisions(data||[]));
@@ -1763,7 +1859,7 @@ function HelmPage() {
 
   const loadHistory = async () => {
     const { data } = await supabase.from('reviews')
-      .select('id,title,review_type,notes,created_at')
+      .select('id,title,review_type,notes,prompt_used,created_at')
       .order('created_at', { ascending: false })
       .limit(20);
     setHistory(data || []);
@@ -1773,6 +1869,14 @@ function HelmPage() {
     const next = !showHistory;
     setShowHistory(next);
     if (next && history === null) loadHistory();
+  };
+
+  const toggleHistoryItem = (id) => {
+    setExpandedHistory(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   const run = async (type, extra={}) => {
@@ -1823,15 +1927,46 @@ function HelmPage() {
           <div className="section-title" style={{marginTop:0}}>Recent {ASSISTANT_NAME} briefs</div>
           {history === null && <div className="meta">Loading…</div>}
           {history?.length === 0 && <div className="meta">No briefs yet. Run one above.</div>}
-          {history?.map(h=>(
-            <div key={h.id} className="card-sm" style={{background:'var(--surface2)'}}>
-              <div className="row-between">
-                <div className="name" style={{fontSize:13}}>{h.title}</div>
-                <span className="meta">{fmtDate(h.created_at)} {fmtTime(h.created_at)}</span>
+          {history?.map(h=>{
+            const isOpen = expandedHistory.has(h.id);
+            let parsed = null;
+            try { if (h.prompt_used) parsed = JSON.parse(h.prompt_used); } catch(_){}
+            return (
+              <div key={h.id} className="card-sm" style={{background:'var(--surface2)',cursor:'pointer',marginBottom:6}} onClick={()=>toggleHistoryItem(h.id)}>
+                <div className="row-between">
+                  <div className="name" style={{fontSize:13}}>{h.title}</div>
+                  <div className="row" style={{gap:8}}>
+                    <span className="meta">{fmtDate(h.created_at)} {fmtTime(h.created_at)}</span>
+                    <span style={{color:'var(--muted)',fontSize:12}}>{isOpen?'▲':'▼'}</span>
+                  </div>
+                </div>
+                <div className="meta" style={{marginTop:3}}>{isOpen ? h.notes : (h.notes||'').slice(0,120)+(h.notes?.length>120?'…':'')}</div>
+
+                {isOpen && parsed && (
+                  <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+                    {parsed.attention?.length>0 && (
+                      <div style={{marginBottom:8}}>
+                        <div style={{fontSize:10,fontWeight:600,color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Attention</div>
+                        {parsed.attention.map((a,i)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--amber)'}}>•</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+                      </div>
+                    )}
+                    {parsed.next_actions?.length>0 && (
+                      <div style={{marginBottom:8}}>
+                        <div style={{fontSize:10,fontWeight:600,color:'var(--accent)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Next actions</div>
+                        {parsed.next_actions.map((a,i)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--accent)'}}>{i+1}.</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+                      </div>
+                    )}
+                    {parsed.flags?.length>0 && (
+                      <div>
+                        <div style={{fontSize:10,fontWeight:600,color:'var(--red)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Flags</div>
+                        {parsed.flags.map((f,i)=><div key={i} style={{fontSize:12,color:'var(--muted)',lineHeight:1.5}}>⚠ {f}</div>)}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              {h.notes && <div className="meta" style={{marginTop:3}}>{h.notes.slice(0,140)}{h.notes.length>140?'…':''}</div>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -2389,26 +2524,28 @@ function App() {
   ];
 
   const moreItems = [
-    { id:'helm',       label:ASSISTANT_NAME, icon:'zap' },
+    { id:'helm',         label:ASSISTANT_NAME,            icon:'zap' },
     { id:'helmsettings', label:ASSISTANT_NAME+' Settings', icon:'box' },
-    { id:'calendar',  label:'Calendar', icon:'clock' },
-    { id:'projects',  label:'Projects', icon:'folder' },
-    { id:'areas',     label:'Areas & Roles', icon:'layers' },
-    { id:'decisions', label:'Decisions & Assets', icon:'box' },
-    { id:'reviews',   label:'Weekly Review', icon:'clock' },
+    { id:'calendar',     label:'Calendar',                 icon:'clock' },
+    { id:'projects',     label:'Projects',                 icon:'folder' },
+    { id:'areas',        label:'Areas & Roles',            icon:'layers' },
+    { id:'decisions',    label:'Decisions & Assets',       icon:'box' },
+    { id:'reviews',      label:'Weekly Review',            icon:'clock' },
+    { id:'debug',        label:'Debug Log',                icon:'alert' },
   ];
 
   const renderPage = () => {
-    if (page==='dashboard') return <DashboardPage user={user} onNavigate={setPage}/>;
-    if (page==='helm')       return <HelmPage/>;
+    if (page==='dashboard')    return <DashboardPage user={user} onNavigate={setPage}/>;
+    if (page==='helm')         return <HelmPage/>;
     if (page==='helmsettings') return <HelmSettingsPage/>;
-    if (page==='projects')  return <ProjectsPage/>;
-    if (page==='tasks')     return <TasksPage/>;
-    if (page==='capture')   return <QuickCapturePage/>;
-    if (page==='calendar')  return <CalendarPage/>;
-    if (page==='areas')     return <AreasPage/>;
-    if (page==='decisions') return <DecisionsAssetsPage/>;
-    if (page==='reviews')   return <ReviewsPage/>;
+    if (page==='projects')     return <ProjectsPage/>;
+    if (page==='tasks')        return <TasksPage/>;
+    if (page==='capture')      return <QuickCapturePage/>;
+    if (page==='calendar')     return <CalendarPage/>;
+    if (page==='areas')        return <AreasPage/>;
+    if (page==='decisions')    return <DecisionsAssetsPage/>;
+    if (page==='reviews')      return <ReviewsPage/>;
+    if (page==='debug')        return <DebugPage/>;
     if (page==='more') return (
       <div className="page">
         <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>More</h1>
@@ -2438,7 +2575,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -2447,7 +2584,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
