@@ -184,6 +184,33 @@ const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
 // changed here (or via a future settings screen) without touching anything else.
 const ASSISTANT_NAME = 'Helm';
 
+// ── STALENESS THRESHOLDS ──────────────────────────────────────
+// How old a brief can be before showing a warning. Hard-coded for
+// now; intended to be configurable via Helm Settings in future.
+const STALE_MS = {
+  'Plan My Day':            4 * 3600_000,   // 4 hours
+  'Weekly Review':          7 * 86400_000,  // 7 days
+  'Pressure Test Decision': 24 * 3600_000,  // 24 hours
+  'Tidy My System':         48 * 3600_000,  // 48 hours
+};
+
+const briefAgeMs  = (b) => b ? Date.now() - new Date(b.created_at).getTime() : null;
+const isBriefStale = (b) => {
+  if (!b) return false;
+  const age = briefAgeMs(b);
+  const threshold = STALE_MS[b.title] ?? STALE_MS['Plan My Day'];
+  return age > threshold;
+};
+const fmtBriefAge = (b) => {
+  if (!b) return '';
+  const ms = briefAgeMs(b);
+  const h  = Math.floor(ms / 3600_000);
+  const m  = Math.floor((ms % 3600_000) / 60_000);
+  if (h >= 48) return `${Math.floor(h/24)} day${Math.floor(h/24)!==1?'s':''} ago`;
+  if (h >= 1)  return `${h} hour${h!==1?'s':''} ago`;
+  return `${m} minute${m!==1?'s':''} ago`;
+};
+
 // ── HELM SETTINGS ─────────────────────────────────────────────
 const DEFAULT_HELM_SETTINGS = {
   tone: 'direct',
@@ -1859,9 +1886,9 @@ function HelmPage() {
 
   const loadHistory = async () => {
     const { data } = await supabase.from('reviews')
-      .select('id,title,review_type,notes,prompt_used,created_at')
+      .select('id,title,review_type,notes,prompt_used,model_used,token_usage,estimated_cost,created_at')
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(40);
     setHistory(data || []);
   };
 
@@ -1878,6 +1905,22 @@ function HelmPage() {
       return next;
     });
   };
+
+  // Group history by local date then sort newest first
+  const groupedHistory = (() => {
+    if (!history) return [];
+    const groups = {};
+    const todayKey = localDateKey();
+    const yesterdayKey = localDateKey(new Date(Date.now() - 86400_000));
+    history.forEach(h => {
+      const dk = localDateKey(new Date(h.created_at));
+      const label = dk === todayKey ? 'Today' : dk === yesterdayKey ? 'Yesterday' :
+        new Date(h.created_at).toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long'});
+      if (!groups[dk]) groups[dk] = { label, dk, items:[] };
+      groups[dk].items.push(h);
+    });
+    return Object.values(groups).sort((a:any,b:any) => b.dk.localeCompare(a.dk));
+  })();
 
   const run = async (type, extra={}) => {
     setActiveType(type); setLoading(true); setResult(null); setPickDecision(false);
@@ -1923,50 +1966,75 @@ function HelmPage() {
       </button>
 
       {showHistory && (
-        <div className="card" style={{marginBottom:16}}>
-          <div className="section-title" style={{marginTop:0}}>Recent {ASSISTANT_NAME} briefs</div>
-          {history === null && <div className="meta">Loading…</div>}
-          {history?.length === 0 && <div className="meta">No briefs yet. Run one above.</div>}
-          {history?.map(h=>{
-            const isOpen = expandedHistory.has(h.id);
-            let parsed = null;
-            try { if (h.prompt_used) parsed = JSON.parse(h.prompt_used); } catch(_){}
-            return (
-              <div key={h.id} className="card-sm" style={{background:'var(--surface2)',cursor:'pointer',marginBottom:6}} onClick={()=>toggleHistoryItem(h.id)}>
-                <div className="row-between">
-                  <div className="name" style={{fontSize:13}}>{h.title}</div>
-                  <div className="row" style={{gap:8}}>
-                    <span className="meta">{fmtDate(h.created_at)} {fmtTime(h.created_at)}</span>
-                    <span style={{color:'var(--muted)',fontSize:12}}>{isOpen?'▲':'▼'}</span>
-                  </div>
-                </div>
-                <div className="meta" style={{marginTop:3}}>{isOpen ? h.notes : (h.notes||'').slice(0,120)+(h.notes?.length>120?'…':'')}</div>
+        <div style={{marginBottom:16}}>
+          {history === null && <div className="meta" style={{padding:'8px 0'}}>Loading…</div>}
+          {history?.length === 0 && <div className="meta" style={{padding:'8px 0'}}>No briefs yet. Run one above.</div>}
 
-                {isOpen && parsed && (
-                  <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
-                    {parsed.attention?.length>0 && (
-                      <div style={{marginBottom:8}}>
-                        <div style={{fontSize:10,fontWeight:600,color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Attention</div>
-                        {parsed.attention.map((a,i)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--amber)'}}>•</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+          {groupedHistory.map((group:any) => (
+            <div key={group.dk}>
+              <div className="section-title" style={{marginTop:8}}>{group.label}</div>
+              {group.items.map((h:any) => {
+                const isOpen = expandedHistory.has(h.id);
+                let parsed = null;
+                try { if (h.prompt_used) parsed = JSON.parse(h.prompt_used); } catch(_){}
+                const typeColour = {
+                  'Plan My Day':'var(--accent)', 'Weekly Review':'var(--accent2)',
+                  'Pressure Test Decision':'var(--amber)', 'Tidy My System':'var(--green)',
+                }[h.title] || 'var(--muted)';
+                const stale = isBriefStale(h);
+                return (
+                  <div key={h.id} className="card-sm" style={{background:'var(--surface2)',cursor:'pointer',marginBottom:6}} onClick={()=>toggleHistoryItem(h.id)}>
+                    <div className="row-between">
+                      <div className="row" style={{gap:6,flex:1,minWidth:0}}>
+                        <span style={{fontSize:10,fontWeight:600,color:typeColour,flexShrink:0}}>{h.title}</span>
+                        {stale && <span style={{fontSize:10,color:'var(--amber)'}}>· {fmtBriefAge(h)}</span>}
                       </div>
-                    )}
-                    {parsed.next_actions?.length>0 && (
-                      <div style={{marginBottom:8}}>
-                        <div style={{fontSize:10,fontWeight:600,color:'var(--accent)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Next actions</div>
-                        {parsed.next_actions.map((a,i)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--accent)'}}>{i+1}.</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+                      <div className="row" style={{gap:6,flexShrink:0}}>
+                        <span className="meta">{fmtTime(h.created_at)}</span>
+                        <span style={{color:'var(--muted)',fontSize:11}}>{isOpen?'▲':'▼'}</span>
                       </div>
-                    )}
-                    {parsed.flags?.length>0 && (
-                      <div>
-                        <div style={{fontSize:10,fontWeight:600,color:'var(--red)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Flags</div>
-                        {parsed.flags.map((f,i)=><div key={i} style={{fontSize:12,color:'var(--muted)',lineHeight:1.5}}>⚠ {f}</div>)}
+                    </div>
+                    <div className="meta" style={{marginTop:3}}>{isOpen ? h.notes : (h.notes||'').slice(0,110)+((h.notes||'').length>110?'…':'')}</div>
+
+                    {isOpen && (
+                      <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+                        {stale && (
+                          <div style={{fontSize:11,color:'var(--amber)',marginBottom:8}}>
+                            ⚠ Generated {fmtBriefAge(h)} — data may have changed since this was created.
+                          </div>
+                        )}
+                        {h.model_used && (
+                          <div className="meta" style={{marginBottom:8}}>
+                            Model: {h.model_used}
+                            {h.token_usage && ` · ${h.token_usage.total_tokens?.toLocaleString()} tokens`}
+                            {h.estimated_cost != null && ` · ~$${h.estimated_cost.toFixed(4)}`}
+                          </div>
+                        )}
+                        {parsed?.attention?.length>0 && (
+                          <div style={{marginBottom:8}}>
+                            <div style={{fontSize:10,fontWeight:600,color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Attention</div>
+                            {parsed.attention.map((a:any,i:number)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--amber)'}}>•</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+                          </div>
+                        )}
+                        {parsed?.next_actions?.length>0 && (
+                          <div style={{marginBottom:8}}>
+                            <div style={{fontSize:10,fontWeight:600,color:'var(--accent)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Next actions</div>
+                            {parsed.next_actions.map((a:any,i:number)=><div key={i} style={{fontSize:12,lineHeight:1.5,marginBottom:3,display:'flex',gap:6}}><span style={{color:'var(--accent)'}}>{i+1}.</span><span style={{color:'var(--muted)'}}>{a}</span></div>)}
+                          </div>
+                        )}
+                        {parsed?.flags?.length>0 && (
+                          <div>
+                            <div style={{fontSize:10,fontWeight:600,color:'var(--red)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Flags</div>
+                            {parsed.flags.map((f:any,i:number)=><div key={i} style={{fontSize:12,color:'var(--muted)',lineHeight:1.5}}>⚠ {f}</div>)}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
 
@@ -2413,7 +2481,13 @@ function DashboardPage({ user, onNavigate }) {
           </div>
         ) : (
           <div>
-            <div style={{fontSize:13,lineHeight:1.55,marginBottom:showBriefDetail?12:10}}>{parsedBrief.summary}</div>
+            <div style={{fontSize:13,lineHeight:1.55,marginBottom:8}}>{parsedBrief.summary}</div>
+
+            {isBriefStale(brief) && (
+              <div style={{fontSize:12,color:'var(--amber)',background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'7px 10px',marginBottom:8,lineHeight:1.4}}>
+                ⚠ Generated {fmtBriefAge(brief)}. Calendar, tasks or projects may have changed.
+              </div>
+            )}
 
             {showBriefDetail && (
               <div style={{marginBottom:10}}>
