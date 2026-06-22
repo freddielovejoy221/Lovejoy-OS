@@ -183,7 +183,7 @@ const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
 // this single constant drives every user-facing label, so it can be
 // changed here (or via a future settings screen) without touching anything else.
 const ASSISTANT_NAME = 'Helm';
-const BILLING_URL = 'https://console.anthropic.com/billing';
+const BILLING_URL = 'https://platform.claude.com/settings/billing';
 
 // ── STALENESS THRESHOLDS ──────────────────────────────────────
 // How old a brief can be before showing a warning. Hard-coded for
@@ -1752,7 +1752,9 @@ function SystemHealthPage({ onNavigate }) {
 
     const [sessRes, credRes, logsRes, reviewsRes, billingRes, flagsRes] = await Promise.all([
       supabase.auth.getSession(),
-      supabase.from('google_credentials').select('refresh_token,helm_calendar_id,token_expiry').maybeSingle(),
+      // Only fetch helm_calendar_id — deliberately NOT requesting refresh_token or access_token.
+      // Those are kept server-side only. RLS policy "Own credentials read" allows this select.
+      supabase.from('google_credentials').select('helm_calendar_id').maybeSingle(),
       supabase.from('helm_logs').select('*').gte('created_at', last7d).order('created_at',{ascending:false}).limit(200),
       supabase.from('reviews').select('estimated_cost,title,created_at').gte('created_at', monthStart).order('created_at',{ascending:false}),
       supabase.from('billing_snapshots').select('*').maybeSingle(),
@@ -1763,11 +1765,17 @@ function SystemHealthPage({ onNavigate }) {
     const logs    = logsRes.data  || [];
     const reviews = reviewsRes.data || [];
 
-    // Derive status from logs
+    // Derive status from logs (reliable — no token access needed)
     const lastCalRead  = logs.find(l=>l.function_name==='calendar'&&l.action==='read_events'&&l.status==='success');
     const lastHelmRun  = logs.find(l=>l.function_name==='ai-chief-of-staff'&&l.status==='success');
     const lastCalWrite = logs.find(l=>l.action==='create_block'&&l.status==='success');
     const recentErrors = logs.filter(l=>l.status==='error'&&l.created_at>=last24h);
+    // Calendar is connected if it has read successfully in the last 7 days.
+    // Helm calendar is configured if helm_calendar_id is stored OR if setup succeeded.
+    const calConnectedViaLogs = !!lastCalRead;
+    const helmCalViaLogs = logs.some(l=>l.action==='setup_helm_calendar'&&l.status==='success') ||
+                           logs.some(l=>l.action==='create_block'&&l.status==='success');
+    const helmCalId = cred?.helm_calendar_id || null;
 
     // Derived billing figures from real data
     const monthlySpend  = reviews.reduce((s,r)=>s+(r.estimated_cost||0),0);
@@ -1779,6 +1787,7 @@ function SystemHealthPage({ onNavigate }) {
       session: sessRes.data?.session,
       cred, logs, lastCalRead, lastHelmRun, lastCalWrite, recentErrors,
       monthlySpend, helmsThisMonth, helmsToday, lastBrief,
+      calConnectedViaLogs, helmCalViaLogs, helmCalId,
     });
     setBilling(billingRes.data);
     setBillingForm(billingRes.data || { credit_balance:'4.40', monthly_limit:'5.00', auto_reload:'off' });
@@ -1861,8 +1870,8 @@ function SystemHealthPage({ onNavigate }) {
     );
   };
 
-  const calConnected = !!(h.cred?.refresh_token);
-  const helmCalOk    = !!(h.cred?.helm_calendar_id);
+  const calConnected = h.calConnectedViaLogs;
+  const helmCalOk    = !!(h.helmCalViaLogs || h.helmCalId);
   const balance      = parseFloat(billing?.credit_balance)||0;
   const limit        = parseFloat(billing?.monthly_limit)||0;
   const spent        = h.monthlySpend||0;
@@ -1883,18 +1892,18 @@ function SystemHealthPage({ onNavigate }) {
         <StatusRow label="Auth" status={h.session?'Working':'Not signed in'}
           detail={h.session?.user?.email||null}/>
         <StatusRow label="Google Calendar"
-          status={calConnected?'Connected':'Not configured'}
+          status={calConnected?'Connected':h.lastCalRead===undefined?'Unknown':'Needs reconnect'}
           detail={calConnected
-            ? h.cred?.token_expiry ? `Token expires ${fmtDate(h.cred.token_expiry)}` : 'Refresh token stored'
-            : 'Sign in with Google to connect calendar.'}/>
+            ? `Last read ${relTime(h.lastCalRead?.created_at)} · ${h.lastCalRead?.meta?.event_count||0} events`
+            : 'No successful calendar read in last 7 days. Open Calendar tab to test.'}/>
         <StatusRow label="Helm Calendar (🧭 Lovejoy OS)"
           status={helmCalOk?'Configured':'Not set up'}
           detail={helmCalOk
-            ? 'Dedicated calendar exists. Helm blocks write here.'
-            : 'Will be created on first calendar block approval.'}/>
+            ? 'Dedicated calendar exists. Helm blocks write here only.'
+            : 'Will be created automatically on first calendar block approval.'}/>
         <StatusRow label="Helm / Claude API"
           status={h.lastHelmRun?'Working':'Unknown'}
-          detail={h.lastHelmRun ? `Last successful run ${relTime(h.lastHelmRun.created_at)}` : 'No recent Helm runs in the last 7 days.'}/>
+          detail={h.lastHelmRun ? `Last successful run ${relTime(h.lastHelmRun.created_at)}` : 'No recent Helm runs in last 7 days. Run Plan My Day to test.'}/>
       </div>
 
       {/* ── Recent Activity ── */}
