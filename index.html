@@ -1522,40 +1522,68 @@ function ReviewsPage() {
   );
 }
 
-// ── FEATURES WIKI ─────────────────────────────────────────────
-// A practical in-app reference. Not a marketing page.
-// Hard-coded for now; planned to pull from roadmap table later.
+// ── FEATURES WIKI (data-driven from roadmap table) ────────────
 function FeaturesWikiPage() {
-  const [open, setOpen] = useState(new Set(['built']));
-  const toggle = id => setOpen(prev => {
+  const [features, setFeatures] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [openSections, setOpenSections] = useState(new Set(['live','experimental']));
+
+  useEffect(()=>{
+    supabase.from('roadmap')
+      .select('id,name,description,status,feature_type,priority,sort_order,notes')
+      .order('sort_order')
+      .then(({data}) => { setFeatures(data||[]); setLoading(false); });
+  },[]);
+
+  const toggle = id => setOpenSections(prev => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
   });
 
-  const Sec = ({id, icon, title, colour, children}) => {
-    const isOpen = open.has(id);
+  // Status display config — order matters for page flow
+  const STATUS_CONFIG = [
+    { key:'live',         label:'Built and Working',    icon:'✅', colour:'var(--green)'   },
+    { key:'experimental', label:'Experimental',          icon:'🧪', colour:'var(--amber)'   },
+    { key:'in_progress',  label:'Currently Building',    icon:'🔨', colour:'var(--accent)'  },
+    { key:'queued',       label:'Coming Next',           icon:'📋', colour:'var(--accent2)' },
+    { key:'planned',      label:'Planned',               icon:'🗺️', colour:'var(--accent2)' },
+    { key:'someday',      label:'Someday / Ideas',       icon:'💡', colour:'var(--muted)'   },
+    { key:'idea',         label:'Someday / Ideas',       icon:'💡', colour:'var(--muted)'   },
+    { key:'cancelled',    label:'Cancelled / Dropped',   icon:'🚫', colour:'var(--red)'     },
+  ];
+
+  const TYPE_LABELS = {
+    core:'Core', helm:'Helm', calendar:'Calendar',
+    integration:'Integration', safety:'Safety', infrastructure:'Infrastructure',
+  };
+  const TYPE_COLOURS = {
+    core:'var(--accent)', helm:'var(--accent2)', calendar:'var(--green)',
+    integration:'var(--amber)', safety:'var(--red)', infrastructure:'var(--muted)',
+  };
+
+  // Group features by status
+  const grouped = {};
+  features.forEach(f => { (grouped[f.status] = grouped[f.status]||[]).push(f); });
+
+  // Merge 'idea' into 'someday' display
+  if (grouped.idea && !grouped.someday) grouped.someday = grouped.idea;
+  else if (grouped.idea && grouped.someday) grouped.someday = [...grouped.someday, ...grouped.idea];
+
+  const Sec = ({id, icon, title, colour, count, children}) => {
+    const isOpen = openSections.has(id);
     return (
       <div className="card" style={{marginBottom:10,borderLeft:`3px solid ${colour}`}}>
         <div className="row-between" style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggle(id)}>
           <div className="row" style={{gap:10}}>
-            <span style={{fontSize:20}}>{icon}</span>
+            <span style={{fontSize:18}}>{icon}</span>
             <div className="name">{title}</div>
+            {count>0 && <span className="pill pill-muted" style={{fontSize:10}}>{count}</span>}
           </div>
-          <span style={{color:'var(--muted)',fontSize:12}}>{isOpen?'▲':'▼'}</span>
+          <span style={{color:'var(--muted)',fontSize:11}}>{isOpen?'▲':'▼'}</span>
         </div>
         {isOpen && <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)'}}>{children}</div>}
       </div>
     );
   };
-
-  const Item = ({label, detail=null, tag=null, tagColour='var(--muted)'}) => (
-    <div style={{marginBottom:8,paddingBottom:8,borderBottom:'1px solid var(--border)'}}>
-      <div className="row" style={{gap:8,marginBottom:detail?2:0}}>
-        <div style={{fontSize:13,fontWeight:500,flex:1}}>{label}</div>
-        {tag && <span style={{fontSize:10,fontWeight:600,color:tagColour,flexShrink:0,textTransform:'uppercase'}}>{tag}</span>}
-      </div>
-      {detail && <div className="meta">{detail}</div>}
-    </div>
-  );
 
   const Recipe = ({title, steps}) => (
     <div className="card-sm" style={{background:'var(--surface2)',marginBottom:8}}>
@@ -1569,135 +1597,132 @@ function FeaturesWikiPage() {
     </div>
   );
 
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
   return (
     <div className="page">
       <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>Features Guide</h1>
-      <div className="meta" style={{marginBottom:16}}>
-        A practical memory aid — what Lovejoy OS can do, how Helm works, what's safe, what's planned.
-      </div>
+      <div className="meta" style={{marginBottom:4}}>What Lovejoy OS can do, what Helm can do, what is safe, and what is coming.</div>
+      <div className="meta" style={{marginBottom:16,fontSize:11}}>{features.length} features tracked · tap any section to expand</div>
 
-      {/* 1 — Built and working */}
-      <Sec id="built" icon="✅" title="Built and Working" colour="var(--green)">
-        <Item label="Dashboard" detail="Today's schedule, Helm Brief card, Attention Required engine, upcoming asset alerts." tag="Live" tagColour="var(--green)"/>
-        <Item label="Tasks + Waiting For" detail="Add, complete, flag as next action, mark as chased. Filter by area or project." tag="Live" tagColour="var(--green)"/>
-        <Item label="Projects" detail="Horizons (Critical / Active / Maintenance / Someday), linked tasks, status filters." tag="Live" tagColour="var(--green)"/>
-        <Item label="Decisions" detail="Log open decisions with context and options. Mark as decided, deferred or dropped." tag="Live" tagColour="var(--green)"/>
-        <Item label="Assets" detail="Track vehicles, subscriptions, insurance, accounts, devices. Dashboard flags renewals and MOT dates." tag="Live" tagColour="var(--green)"/>
-        <Item label="Quick Capture" detail="Capture tasks, projects, decisions and waiting-for items in seconds. Categorise later." tag="Live" tagColour="var(--green)"/>
-        <Item label="Areas & Roles" detail="10 life areas, roles within each. Everything in the system links back to an area." tag="Live" tagColour="var(--green)"/>
-        <Item label="Google Calendar — read" detail="Today's schedule, next 7 days with busy/overload detection, free-time gap finder." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm — Plan My Day" detail="AI brief using your real calendar, tasks and projects. Saved to database. No re-run on navigation." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm — Weekly Review" detail="Step back: what's slipping, what needs deciding, what can be dropped." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm — Pressure Test Decision" detail="Sharpens your thinking on an open decision. Does not decide for you." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm — Tidy My System" detail="Finds stale projects, missing next actions, clutter. Proposes cleanups for approval." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm History" detail="All previous briefs grouped by date and type. Expandable without triggering a new AI call." tag="Live" tagColour="var(--green)"/>
-        <Item label="Proposed Actions Approval" detail="Approve, reject or edit every Helm suggestion before it writes to your data." tag="Live" tagColour="var(--green)"/>
-        <Item label="Google Calendar block creation" detail="Writes to a dedicated 🧭 Lovejoy OS (Helm) calendar. Never touches your existing events." tag="Live" tagColour="var(--green)"/>
-        <Item label="Helm Settings" detail="Tone, planning style, energy assumption, workload bias, working hours, weekend rules, calendar toggles, priority ranking." tag="Live" tagColour="var(--green)"/>
-        <Item label="Debug Log" detail="Every Edge Function call logged with status, duration, error detail and metadata." tag="Live" tagColour="var(--green)"/>
+      {/* Data-driven feature groups */}
+      {STATUS_CONFIG
+        .filter((sc, idx, arr) => {
+          // Dedupe: skip 'idea' since it's merged into 'someday'
+          if (sc.key === 'idea') return false;
+          // Only show groups that have features
+          const items = sc.key === 'someday' ? (grouped['someday']||[]) : (grouped[sc.key]||[]);
+          return items.length > 0;
+        })
+        .map(sc => {
+          const items = grouped[sc.key] || [];
+          return (
+            <Sec key={sc.key} id={sc.key} icon={sc.icon} title={sc.label} colour={sc.colour} count={items.length}>
+              {items.map(f => (
+                <div key={f.id} style={{marginBottom:10,paddingBottom:10,borderBottom:'1px solid var(--border)'}}>
+                  <div className="row-between" style={{marginBottom:f.description?3:0}}>
+                    <div style={{fontSize:13,fontWeight:500,flex:1}}>{f.name}</div>
+                    {f.feature_type && (
+                      <span style={{fontSize:10,fontWeight:600,color:TYPE_COLOURS[f.feature_type]||'var(--muted)',flexShrink:0,marginLeft:8,textTransform:'uppercase'}}>
+                        {TYPE_LABELS[f.feature_type]||f.feature_type}
+                      </span>
+                    )}
+                  </div>
+                  {f.description && <div className="meta" style={{lineHeight:1.5}}>{f.description}</div>}
+                  {f.notes && <div className="meta" style={{marginTop:3,fontStyle:'italic'}}>{f.notes}</div>}
+                </div>
+              ))}
+            </Sec>
+          );
+        })}
+
+      {/* Static: Helm Abilities */}
+      <Sec id="helm_abilities" icon="🧭" title="What Helm Can Do" colour="var(--accent)" count={0}>
+        {[
+          ['Reads your world', 'Calendar, open tasks, active projects, waiting-for items, open decisions and upcoming asset dates — all read before every brief.'],
+          ['Plans your day', 'Reasons about today\'s events, available time, energy assumption and task priorities. Suggests a realistic order.'],
+          ['Identifies what needs attention', 'Overdue tasks, stale decisions, projects with no next action, upcoming asset dates, waiting-for items due for chase.'],
+          ['Proposes tasks', 'Suggests new tasks with title, priority and due date. Your approval required before creating.'],
+          ['Sets project next actions', 'Spots critical/active projects with nothing teed up. Proposes a concrete next action.'],
+          ['Proposes calendar blocks', 'Focus, admin, workout or travel blocks. Goes to the dedicated Helm calendar on approval only.'],
+          ['Updates decision status', 'Can propose marking a stale decision as decided, deferred or dropped.'],
+          ['Creates waiting-for items', 'Tracks something you\'re waiting on. Requires approval.'],
+          ['Archives stale projects', 'Archive (never delete) projects that have drifted. Requires approval.'],
+          ['Adapts to your settings', 'Tone, workload bias, weekend rules, priority ranking and working hours shape every brief.'],
+          ['Remembers previous briefs', 'Saves every brief with model, token usage, estimated cost and a snapshot of the data it used.'],
+        ].map(([label, detail], i) => (
+          <div key={i} style={{marginBottom:9,paddingBottom:9,borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:2}}>{label}</div>
+            <div className="meta" style={{lineHeight:1.5}}>{detail}</div>
+          </div>
+        ))}
       </Sec>
 
-      {/* 2 — Helm abilities */}
-      <Sec id="helm" icon="🧭" title="What Helm Can Do" colour="var(--accent)">
-        <Item label="Read your world" detail="Helm reads your calendar, open tasks, active projects, waiting-for items, open decisions and upcoming asset dates before every brief."/>
-        <Item label="Plan your day" detail="Reasons about today's events, your available time, energy assumption and task priorities. Suggests a realistic order."/>
-        <Item label="Identify what needs attention" detail="Flags overdue tasks, stale decisions, projects with no next action, upcoming asset dates and waiting-for items due for chase."/>
-        <Item label="Propose tasks" detail="Suggests new tasks with title, priority and due date. Requires your approval before creating."/>
-        <Item label="Set project next actions" detail="Spots critical/active projects with nothing teed up. Proposes a concrete next action. Clears the old flag before setting the new one."/>
-        <Item label="Propose calendar blocks" detail="Suggests focus, admin, workout or travel blocks. Goes to the dedicated Helm calendar on approval only."/>
-        <Item label="Update decision status" detail="Can propose marking a stale decision as decided, deferred or dropped. Requires your approval."/>
-        <Item label="Create waiting-for items" detail="Can propose tracking something you're waiting on. Requires approval."/>
-        <Item label="Archive stale projects" detail="Proposes archiving (never deleting) projects that have drifted. Requires approval."/>
-        <Item label="Adapt to your settings" detail="Tone, workload bias, weekend rules, priority ranking and working hours all shape every brief."/>
-        <Item label="Remember previous briefs" detail="Saves every brief with model, token usage, estimated cost and a snapshot of the data it used."/>
+      {/* Static: Safety Rules */}
+      <Sec id="safety_rules" icon="🔒" title="Safety Rules" colour="var(--red)" count={0}>
+        {[
+          ['Nothing changes without your approval', 'Every Helm proposal is shown first. You tap Approve — or it does not happen.'],
+          ['Calendar writes go to a dedicated Helm calendar', '🧭 Lovejoy OS (Helm) is separate from your shared calendar. Existing events are never touched.'],
+          ['Existing Google Calendar events cannot be edited', 'Enforced by Google\'s permission model (calendar.app.created scope), not just code.'],
+          ['Archive, not delete', 'Projects are archived (status set to archived) rather than deleted. The record always exists.'],
+          ['Audit trail', 'Every proposed action — approved, rejected or edited — stored in proposed_actions with timestamps.'],
+          ['Debug Log', 'Every Edge Function call is logged. Errors are readable without needing to contact a developer.'],
+          ['No medical, legal or financial decisions', 'Helm flags when professional advice is needed. It will not make those decisions.'],
+          ['No unsolicited AI calls', 'Helm only runs when you press a button. It never runs in the background.'],
+        ].map(([label, detail], i) => (
+          <div key={i} style={{marginBottom:9,paddingBottom:9,borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:2}}>{label}</div>
+            <div className="meta" style={{lineHeight:1.5}}>{detail}</div>
+          </div>
+        ))}
       </Sec>
 
-      {/* 3 — Safety rules */}
-      <Sec id="safety" icon="🔒" title="Safety Rules" colour="var(--red)">
-        <Item label="Nothing changes without your approval" detail="Every Helm proposal is shown to you first. You tap Approve — or it does not happen."/>
-        <Item label="Calendar writes go to a dedicated Helm calendar" detail="The 🧭 Lovejoy OS (Helm) calendar is separate from your shared calendar. Your existing events are never touched."/>
-        <Item label="Existing Google Calendar events are not edited" detail="Helm can only create events in its own calendar. It cannot edit or delete your real events. This is enforced by Google's permission model, not just our code."/>
-        <Item label="Archive, not delete" detail="Projects are archived (status set to archived) rather than deleted. The record always exists."/>
-        <Item label="Audit trail" detail="Every proposed action — approved, rejected or edited — is stored in the proposed_actions table with timestamps."/>
-        <Item label="Debug Log" detail="Every Edge Function call is logged. Errors are readable and traceable without needing to contact a developer."/>
-        <Item label="No medical, legal or financial decisions" detail="Helm flags when professional advice is needed but does not make those decisions. It will tell you to speak to your accountant, GP or solicitor."/>
-        <Item label="No unsolicited AI calls" detail="Helm only runs when you explicitly press Plan My Day, Refresh Helm, or another action button. It never runs in the background."/>
-      </Sec>
-
-      {/* 4 — Experimental */}
-      <Sec id="experimental" icon="🧪" title="Experimental / In Progress" colour="var(--amber)">
-        <Item label="Staleness warnings" detail="Dashboard and history flag briefs older than a threshold (4h for Plan My Day, 7 days for Weekly Review)." tag="New" tagColour="var(--amber)"/>
-        <Item label="Brief metadata" detail="Model used, token counts, estimated cost and source data snapshot stored per brief." tag="New" tagColour="var(--amber)"/>
-        <Item label="History grouping" detail="Helm History grouped by date, with type colour-coding and age indicators." tag="New" tagColour="var(--amber)"/>
-        <Item label="Helm Settings — all nine categories" detail="Live but some settings may evolve as Helm's behaviour is refined." tag="Evolving" tagColour="var(--amber)"/>
-        <Item label="Proposed Actions — full action set" detail="create_task, update_project_next_action, create_waiting_for, update_decision_status, archive_project, create_calendar_block all active." tag="Live" tagColour="var(--green)"/>
-      </Sec>
-
-      {/* 5 — Planned */}
-      <Sec id="planned" icon="🗺️" title="Planned Features" colour="var(--accent2)">
-        <Item label="Travel Buffer Assistant" detail="Reads calendar locations, estimates travel time via Google Maps Routes API, proposes travel blocks with Waze deep links." tag="Next" tagColour="var(--accent)"/>
-        <Item label="Work calendar free/busy bridge" detail="Show when you're in work meetings without exposing event details (IT restricts full sharing)." tag="Soon" tagColour="var(--accent2)"/>
-        <Item label="Daily briefing" detail="Helm brief delivered to your inbox or as a notification — so you don't need to open the app." tag="Backlog" tagColour="var(--muted)"/>
-        <Item label="Stage 3 calendar — edit Helm's own blocks" detail="Allow editing and deleting blocks that Helm created, but never your real events." tag="Backlog" tagColour="var(--muted)"/>
-        <Item label="Recovery-Aware Training Coach / Helm Fitness" detail="Garmin + Withings integration for training load, HRV, recovery-aware task suggestions." tag="Backlog" tagColour="var(--muted)"/>
-        <Item label="Pollen / Hayfever Dashboard" detail="Flag high-pollen days. Adjust outdoor recommendations in Helm." tag="Backlog" tagColour="var(--muted)"/>
-        <Item label="Gmail integration" detail="Surface relevant emails in Lovejoy OS context (waiting for, action needed)." tag="Someday" tagColour="var(--muted)"/>
-        <Item label="Google Drive integration" detail="Surface relevant documents in project/task context." tag="Someday" tagColour="var(--muted)"/>
-        <Item label="Home Assistant integration" detail="Home and garden automation linking to Lovejoy OS tasks." tag="Someday" tagColour="var(--muted)"/>
-        <Item label="Notifications" detail="Push or email alerts for overdue items, upcoming asset dates, Helm suggestions." tag="Backlog" tagColour="var(--muted)"/>
-      </Sec>
-
-      {/* 6 — Recipes */}
-      <Sec id="recipes" icon="📖" title="How To Use — Recipes" colour="var(--green)">
+      {/* Static: Recipes */}
+      <Sec id="recipes" icon="📖" title="How To Use" colour="var(--green)" count={0}>
         <Recipe title="Plan my day with Helm" steps={[
           'Open the Helm tab (lightning bolt in bottom nav).',
           'Tap Plan My Day.',
-          'Wait a few seconds while Helm reads your calendar and system.',
-          'Read the Summary, What Needs Attention, and Recommended Next Actions.',
-          'Review any Proposed by Helm items and tap Approve, Edit or Reject on each.',
-          'The brief is saved — it will appear on the Dashboard next time you open it.'
+          'Read Summary, What Needs Attention, and Recommended Next Actions.',
+          'Review Proposed by Helm items — tap Approve, Edit or Reject on each.',
+          'The brief is saved and will appear on the Dashboard.'
         ]}/>
         <Recipe title="Turn a Helm suggestion into a task" steps={[
           'In any Helm response, scroll to Proposed by Helm.',
-          'Find the create task proposal.',
-          'Tap Edit if you want to adjust the title, date or priority.',
-          'Tap Approve. The task is created immediately and appears in your Tasks list.',
+          'Find a create task proposal.',
+          'Tap Edit to adjust title, date or priority first.',
+          'Tap Approve — task is created and appears in your Tasks list immediately.',
           'The approval is logged in the audit trail.'
         ]}/>
         <Recipe title="Add a calendar block" steps={[
-          'Run any Helm action — Plan My Day or Tidy My System often proposes blocks.',
+          'Run Plan My Day or Tidy My System — Helm often proposes blocks.',
           'Find the create calendar block proposal.',
-          'Tap Edit to adjust the title, date or time.',
-          'Tap Approve.',
-          'The block appears in your 🧭 Lovejoy OS (Helm) Google Calendar.',
-          'Check the Calendar tab in Lovejoy OS to see it alongside your other events.'
+          'Tap Edit to adjust title, date or time.',
+          'Tap Approve — block appears in your 🧭 Lovejoy OS (Helm) Google Calendar.'
         ]}/>
         <Recipe title="Review old Helm briefs" steps={[
           'Open the Helm tab.',
           'Tap Helm History.',
-          'Briefs are grouped by date — Today, Yesterday, and older dates.',
-          'Tap any brief to expand it and read the full summary, attention items and next actions.',
-          'Viewing history does not call Claude — no cost, no delay.'
+          'Briefs are grouped by date — Today, Yesterday, older.',
+          'Tap any brief to expand the full summary, attention items and next actions.',
+          'Viewing history never calls Claude — no cost, no delay.'
         ]}/>
         <Recipe title="Check the debug log when something breaks" steps={[
           'Open More (bottom right nav).',
           'Tap Debug Log.',
-          'Look for red ✗ entries — these are errors.',
-          'Tap any entry to expand it and see the full error detail.',
-          'Screenshot and share with your developer (or paste to Claude) to diagnose.'
+          'Look for red ✗ entries.',
+          'Tap any entry to expand the full error detail.',
+          'Screenshot and paste to your build session to diagnose.'
         ]}/>
         <Recipe title="Capture a quick thought" steps={[
-          'Tap the + Capture button in the bottom nav.',
+          'Tap + Capture in the bottom nav.',
           'Choose Task, Waiting For, Decision or Project.',
-          'Type what is on your mind. Do not over-think it.',
-          'Assign an area and tap Capture.',
-          'You can add dates, projects and priority later.'
+          'Type what is on your mind — do not overthink it.',
+          'Assign an area and tap Capture. Add context later.'
         ]}/>
         <Recipe title="Add a feature idea to the roadmap" steps={[
-          'Think of a problem Lovejoy OS does not yet solve.',
-          'Note the problem, the expected value, and any technical approach.',
-          'Share it in the next build session — it will be added to the roadmap table.',
-          'The Features Guide will reflect it once added.'
+          'Note the problem, expected value and any technical approach.',
+          'Share it in the next build session.',
+          'It will be added to the roadmap table and appear here automatically.'
         ]}/>
       </Sec>
     </div>
