@@ -183,6 +183,7 @@ const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
 // this single constant drives every user-facing label, so it can be
 // changed here (or via a future settings screen) without touching anything else.
 const ASSISTANT_NAME = 'Helm';
+const BILLING_URL = 'https://console.anthropic.com/billing';
 
 // ── STALENESS THRESHOLDS ──────────────────────────────────────
 // How old a brief can be before showing a warning. Hard-coded for
@@ -1729,6 +1730,334 @@ function FeaturesWikiPage() {
   );
 }
 
+// ── SYSTEM HEALTH PAGE ────────────────────────────────────────
+// Priorities 1 (health), 2 (billing), 3 (export), 8 (connections)
+function SystemHealthPage({ onNavigate }) {
+  const [health, setHealth] = useState(null);
+  const [billing, setBilling] = useState(null);
+  const [flags, setFlags] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [editingBilling, setEditingBilling] = useState(false);
+  const [billingForm, setBillingForm] = useState({});
+  const [savingBilling, setSavingBilling] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportDone, setExportDone] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    const last7d  = new Date(Date.now() - 7*86400_000).toISOString();
+    const last24h = new Date(Date.now() - 86400_000).toISOString();
+    const monthStart = new Date().toISOString().slice(0,7) + '-01';
+    const todayStart = localDateKey() + 'T00:00:00';
+
+    const [sessRes, credRes, logsRes, reviewsRes, billingRes, flagsRes] = await Promise.all([
+      supabase.auth.getSession(),
+      supabase.from('google_credentials').select('refresh_token,helm_calendar_id,token_expiry').maybeSingle(),
+      supabase.from('helm_logs').select('*').gte('created_at', last7d).order('created_at',{ascending:false}).limit(200),
+      supabase.from('reviews').select('estimated_cost,title,created_at').gte('created_at', monthStart).order('created_at',{ascending:false}),
+      supabase.from('billing_snapshots').select('*').maybeSingle(),
+      supabase.from('feature_flags').select('*').maybeSingle(),
+    ]);
+
+    const cred    = credRes.data;
+    const logs    = logsRes.data  || [];
+    const reviews = reviewsRes.data || [];
+
+    // Derive status from logs
+    const lastCalRead  = logs.find(l=>l.function_name==='calendar'&&l.action==='read_events'&&l.status==='success');
+    const lastHelmRun  = logs.find(l=>l.function_name==='ai-chief-of-staff'&&l.status==='success');
+    const lastCalWrite = logs.find(l=>l.action==='create_block'&&l.status==='success');
+    const recentErrors = logs.filter(l=>l.status==='error'&&l.created_at>=last24h);
+
+    // Derived billing figures from real data
+    const monthlySpend  = reviews.reduce((s,r)=>s+(r.estimated_cost||0),0);
+    const helmsThisMonth = reviews.length;
+    const helmsToday = reviews.filter(r=>r.created_at>=todayStart).length;
+    const lastBrief  = reviews[0] || null;
+
+    setHealth({
+      session: sessRes.data?.session,
+      cred, logs, lastCalRead, lastHelmRun, lastCalWrite, recentErrors,
+      monthlySpend, helmsThisMonth, helmsToday, lastBrief,
+    });
+    setBilling(billingRes.data);
+    setBillingForm(billingRes.data || { credit_balance:'4.40', monthly_limit:'5.00', auto_reload:'off' });
+    setFlags(flagsRes.data);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const saveBilling = async () => {
+    setSavingBilling(true);
+    const { data:{user} } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from('billing_snapshots').upsert({
+        user_id: user.id,
+        credit_balance: parseFloat(billingForm.credit_balance)||null,
+        monthly_limit: parseFloat(billingForm.monthly_limit)||null,
+        auto_reload: billingForm.auto_reload||'off',
+        billing_url: BILLING_URL,
+        snapshot_at: new Date().toISOString(),
+      },{ onConflict:'user_id' });
+      await load();
+    }
+    setSavingBilling(false); setEditingBilling(false);
+  };
+
+  const exportData = async () => {
+    setExporting(true);
+    const tables = ['areas','roles','projects','tasks','waiting_for','decisions','assets',
+      'contacts','notes','reviews','helm_settings','proposed_actions','automation_rules',
+      'roadmap','billing_snapshots','feature_flags'];
+    const result = { _meta:{
+      exported_at: new Date().toISOString(),
+      version: '1.0',
+      note: 'Lovejoy OS data backup. Does not include secrets, tokens or API keys.',
+      excluded_tables: ['google_credentials','auth.users','helm_logs'],
+    }};
+    for (const t of tables) {
+      const {data} = await supabase.from(t).select('*');
+      result[t] = data || [];
+    }
+    const blob = new Blob([JSON.stringify(result,null,2)],{type:'application/json'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `lovejoy-os-backup-${localDateKey()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setExporting(false); setExportDone(true);
+    setTimeout(()=>setExportDone(false),3000);
+  };
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+  const h = health;
+
+  // Status helpers
+  const relTime = ts => {
+    if (!ts) return null;
+    const m = Math.floor((Date.now()-new Date(ts))/60000);
+    if (m<1) return 'just now';
+    if (m<60) return `${m}m ago`;
+    const hr = Math.floor(m/60);
+    if (hr<24) return `${hr}h ago`;
+    return `${Math.floor(hr/24)}d ago`;
+  };
+
+  const StatusRow = ({label, status, detail=null, warn=false}) => {
+    const colour = {
+      'Working':'var(--green)','Connected':'var(--green)','Configured':'var(--green)',
+      'Needs reconnect':'var(--amber)','Low':'var(--amber)','Manual only':'var(--muted)',
+      'Failed':'var(--red)','Not configured':'var(--muted)','Unknown':'var(--muted)',
+    }[status]||(warn?'var(--amber)':'var(--muted)');
+    return (
+      <div style={{padding:'9px 0',borderBottom:'1px solid var(--border)'}}>
+        <div className="row-between">
+          <span style={{fontSize:13}}>{label}</span>
+          <span style={{fontSize:12,fontWeight:600,color:colour,flexShrink:0,marginLeft:8}}>{status}</span>
+        </div>
+        {detail && <div className="meta" style={{marginTop:2}}>{detail}</div>}
+      </div>
+    );
+  };
+
+  const calConnected = !!(h.cred?.refresh_token);
+  const helmCalOk    = !!(h.cred?.helm_calendar_id);
+  const balance      = parseFloat(billing?.credit_balance)||0;
+  const limit        = parseFloat(billing?.monthly_limit)||0;
+  const spent        = h.monthlySpend||0;
+  const remaining    = billing ? Math.max(0, balance - spent) : null;
+  const balanceLow   = billing && balance < 1.00;
+  const limitClose   = billing && limit>0 && spent/limit > 0.8;
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>System Health</h1>
+      <div className="meta" style={{marginBottom:16}}>Status of background systems that keep Lovejoy OS running.</div>
+
+      {/* ── Connection Status ── */}
+      <div className="section-title">Connection Status</div>
+      <div className="card" style={{marginBottom:10}}>
+        <StatusRow label="Supabase / Database" status="Working"
+          detail="Database is reachable — this page loaded successfully."/>
+        <StatusRow label="Auth" status={h.session?'Working':'Not signed in'}
+          detail={h.session?.user?.email||null}/>
+        <StatusRow label="Google Calendar"
+          status={calConnected?'Connected':'Not configured'}
+          detail={calConnected
+            ? h.cred?.token_expiry ? `Token expires ${fmtDate(h.cred.token_expiry)}` : 'Refresh token stored'
+            : 'Sign in with Google to connect calendar.'}/>
+        <StatusRow label="Helm Calendar (🧭 Lovejoy OS)"
+          status={helmCalOk?'Configured':'Not set up'}
+          detail={helmCalOk
+            ? 'Dedicated calendar exists. Helm blocks write here.'
+            : 'Will be created on first calendar block approval.'}/>
+        <StatusRow label="Helm / Claude API"
+          status={h.lastHelmRun?'Working':'Unknown'}
+          detail={h.lastHelmRun ? `Last successful run ${relTime(h.lastHelmRun.created_at)}` : 'No recent Helm runs in the last 7 days.'}/>
+      </div>
+
+      {/* ── Recent Activity ── */}
+      <div className="section-title">Recent Activity</div>
+      <div className="card" style={{marginBottom:10}}>
+        <StatusRow label="Last calendar read"
+          status={h.lastCalRead?'Working':'Unknown'}
+          detail={h.lastCalRead
+            ? `${relTime(h.lastCalRead.created_at)} · ${h.lastCalRead.meta?.event_count||0} events`
+            : 'No successful calendar read in the last 7 days.'}/>
+        <StatusRow label="Last Helm brief"
+          status={h.lastBrief?'Working':'Unknown'}
+          detail={h.lastBrief ? `${h.lastBrief.title} · ${relTime(h.lastBrief.created_at)}` : 'No briefs generated yet.'}/>
+        <StatusRow label="Last calendar block written"
+          status={h.lastCalWrite?'Working':'None yet'}
+          detail={h.lastCalWrite ? relTime(h.lastCalWrite.created_at) : 'No calendar blocks have been approved yet.'}/>
+        <div style={{padding:'9px 0'}}>
+          <div className="row-between">
+            <span style={{fontSize:13}}>Errors in last 24 hours</span>
+            <span style={{fontSize:12,fontWeight:600,color:h.recentErrors.length>0?'var(--red)':'var(--green)'}}>
+              {h.recentErrors.length} error{h.recentErrors.length!==1?'s':''}
+            </span>
+          </div>
+          {h.recentErrors.length>0 && (
+            <button className="btn btn-ghost btn-sm" style={{marginTop:6}} onClick={()=>onNavigate('debug')}>
+              View in Debug Log →
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Helm / Claude Billing ── */}
+      <div className="section-title">Helm / Claude Billing</div>
+      <div className="card" style={{marginBottom:10}}>
+        {(balanceLow||limitClose) && (
+          <div style={{background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.25)',borderRadius:6,padding:'8px 10px',marginBottom:12,fontSize:12,color:'var(--amber)',lineHeight:1.5}}>
+            {balanceLow && <div>⚠ Credit balance is low (${balance.toFixed(2)} remaining). Top up at Claude Console.</div>}
+            {limitClose && <div>⚠ Approaching monthly spend limit (${spent.toFixed(4)} of ${limit.toFixed(2)} used).</div>}
+          </div>
+        )}
+
+        {!billing && (
+          <div className="meta" style={{marginBottom:10}}>
+            No billing snapshot set. Enter your credit balance and monthly limit below to track spend.
+          </div>
+        )}
+
+        {!editingBilling ? (
+          <>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+              {[
+                {label:'Credit balance',    val: billing ? `$${parseFloat(billing.credit_balance||0).toFixed(2)}` : '—', warn: balanceLow},
+                {label:'Monthly limit',     val: billing ? `$${parseFloat(billing.monthly_limit||0).toFixed(2)}` : '—'},
+                {label:'Spend this month',  val: `$${spent.toFixed(4)}`, detail:'from Helm data'},
+                {label:'Remaining',         val: remaining!==null ? `$${remaining.toFixed(4)}` : '—', warn: remaining!==null&&remaining<0.50},
+              ].map(s=>(
+                <div key={s.label} className="card-sm" style={{textAlign:'center',background:'var(--surface2)'}}>
+                  <div style={{fontSize:18,fontWeight:700,color:s.warn?'var(--amber)':'var(--text)',lineHeight:1}}>{s.val}</div>
+                  <div className="meta" style={{marginTop:3}}>{s.label}</div>
+                  {s.detail && <div style={{fontSize:10,color:'var(--muted)'}}>{s.detail}</div>}
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+              {[
+                {label:'Helm runs today',      val: h.helmsToday},
+                {label:'Helm runs this month', val: h.helmsThisMonth},
+              ].map(s=>(
+                <div key={s.label} className="card-sm" style={{textAlign:'center',background:'var(--surface2)'}}>
+                  <div style={{fontSize:22,fontWeight:700,lineHeight:1}}>{s.val}</div>
+                  <div className="meta" style={{marginTop:3}}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="meta" style={{marginBottom:12}}>
+              Auto-reload: {billing?.auto_reload||'Off'} · Balance is manually entered
+              {billing?.snapshot_at ? ` · Updated ${relTime(billing.snapshot_at)}` : ''}
+            </div>
+
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-primary btn-sm" onClick={()=>window.open(BILLING_URL,'_blank')}>
+                Open Claude Billing ↗
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setBillingForm(billing||{credit_balance:'4.40',monthly_limit:'5.00',auto_reload:'off'});setEditingBilling(true);}}>
+                Update snapshot
+              </button>
+            </div>
+          </>
+        ) : (
+          <div>
+            <div className="field"><label className="label">Credit balance (USD)</label>
+              <input className="input" type="number" step="0.01" value={billingForm.credit_balance||''} onChange={e=>setBillingForm(p=>({...p,credit_balance:e.target.value}))} placeholder="4.40"/>
+            </div>
+            <div className="field"><label className="label">Monthly spend limit (USD)</label>
+              <input className="input" type="number" step="0.01" value={billingForm.monthly_limit||''} onChange={e=>setBillingForm(p=>({...p,monthly_limit:e.target.value}))} placeholder="5.00"/>
+            </div>
+            <div className="field"><label className="label">Auto-reload</label>
+              <select className="input" value={billingForm.auto_reload||'off'} onChange={e=>setBillingForm(p=>({...p,auto_reload:e.target.value}))}>
+                <option value="off">Off</option><option value="on">On</option>
+              </select>
+            </div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-primary btn-sm" onClick={saveBilling} disabled={savingBilling}>{savingBilling?'Saving…':'Save snapshot'}</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setEditingBilling(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Connections & Permissions ── */}
+      <div className="section-title">Connections & Permissions</div>
+      <div className="card" style={{marginBottom:10}}>
+        {[
+          ['What Lovejoy OS reads', 'Google Calendar (shared calendar, read-only). Your tasks, projects, decisions, assets and waiting-for items in Supabase.'],
+          ['What Helm can read', 'All of the above — calendar events, tasks, projects, decisions, waiting for, assets, settings — before every brief.'],
+          ['What Helm can change', 'Nothing without your explicit approval. Every proposed action must be approved before it writes to your data.'],
+          ['Where calendar blocks go', 'The dedicated 🧭 Lovejoy OS (Helm) Google Calendar only. Never to your shared calendar or primary calendar.'],
+          ['What Helm cannot touch', 'Your existing Google Calendar events. Enforced by Google\'s permission model, not just code.'],
+          ['Secrets in the app', 'None. API keys, tokens and refresh tokens are stored in Supabase Edge Function secrets or the database, never in frontend code.'],
+          ['Where to reconnect', 'Sign out and sign back in with Continue with Google to refresh calendar permissions.'],
+          ['Billing data source', 'Credit balance and monthly limit are manually entered. Spend is calculated from saved Helm brief cost data.'],
+        ].map(([label,detail],i)=>(
+          <div key={i} style={{padding:'9px 0',borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:3}}>{label}</div>
+            <div className="meta" style={{lineHeight:1.5}}>{detail}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Data Export ── */}
+      <div className="section-title">Data Export</div>
+      <div className="card" style={{marginBottom:10}}>
+        <div className="meta" style={{marginBottom:12,lineHeight:1.6}}>
+          Downloads all your Lovejoy OS data as a JSON file. Safe to keep as a local backup.
+          <br/><strong style={{color:'var(--text)'}}>Includes:</strong> areas, roles, projects, tasks, decisions, assets, contacts, notes, Helm settings, reviews, roadmap, proposed actions.
+          <br/><strong style={{color:'var(--text)'}}>Excludes:</strong> API keys, OAuth tokens, refresh tokens (never in the export).
+        </div>
+        <button className="btn btn-primary" style={{justifyContent:'center',width:'100%'}} onClick={exportData} disabled={exporting}>
+          {exporting ? 'Preparing export…' : exportDone ? '✓ Downloaded' : '⬇ Download backup'}
+        </button>
+      </div>
+
+      {/* ── Quick Links ── */}
+      <div className="section-title">Quick Links</div>
+      <div className="card">
+        {[
+          {label:'Debug Log', action:()=>onNavigate('debug')},
+          {label:'Helm Settings', action:()=>onNavigate('helmsettings')},
+          {label:'Features Guide', action:()=>onNavigate('features')},
+          {label:'Claude Console Billing ↗', action:()=>window.open(BILLING_URL,'_blank')},
+          {label:'Supabase Dashboard ↗', action:()=>window.open('https://supabase.com/dashboard','_blank')},
+        ].map((l,i)=>(
+          <div key={i} style={{padding:'9px 0',borderBottom:'1px solid var(--border)',cursor:'pointer'}} onClick={l.action}>
+            <div style={{fontSize:13,color:'var(--accent)'}}>{l.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── DEBUG PAGE ────────────────────────────────────────────────
 function DebugPage() {
   const [logs, setLogs] = useState([]);
@@ -2812,6 +3141,7 @@ function App() {
     { id:'areas',        label:'Areas & Roles',            icon:'layers' },
     { id:'decisions',    label:'Decisions & Assets',       icon:'box' },
     { id:'reviews',      label:'Weekly Review',            icon:'clock' },
+    { id:'systemhealth', label:'System Health',            icon:'alert' },
     { id:'features',     label:'Features Guide',           icon:'alert' },
     { id:'debug',        label:'Debug Log',                icon:'alert' },
   ];
@@ -2827,6 +3157,7 @@ function App() {
     if (page==='areas')        return <AreasPage/>;
     if (page==='decisions')    return <DecisionsAssetsPage/>;
     if (page==='reviews')      return <ReviewsPage/>;
+    if (page==='systemhealth') return <SystemHealthPage onNavigate={setPage}/>;
     if (page==='features')     return <FeaturesWikiPage/>;
     if (page==='debug')        return <DebugPage/>;
     if (page==='more') return (
@@ -2858,7 +3189,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -2867,7 +3198,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
