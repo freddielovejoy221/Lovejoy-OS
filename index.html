@@ -185,6 +185,22 @@ const HELM_FN_URL = SUPABASE_URL + '/functions/v1/ai-chief-of-staff';
 const ASSISTANT_NAME = 'Helm';
 const BILLING_URL = 'https://platform.claude.com/settings/billing';
 
+// Weather defaults — mirrors weather_settings table defaults
+const DEFAULT_WEATHER_SETTINGS = {
+  temp_unit:'celsius', wind_unit:'mph', rain_unit:'mm', time_format:'24h',
+  show_uv:true, show_pollen:true, thunder_show:true,
+  wind_watch_mph:15, wind_caution_mph:25, wind_avoid_mph:35,
+  gust_watch_mph:20, gust_caution_mph:30, gust_avoid_mph:40,
+  rain_watch_pct:40, rain_caution_pct:60, rain_avoid_pct:80,
+  uv_watch:3, uv_caution:6, uv_avoid:8,
+  pollen_watch:15, pollen_caution:35, pollen_avoid:70,
+  act_watersports:true, act_sailing:true, act_sup:false, act_winging:false,
+  act_cycling:true, act_swimming:false, act_gardening:true,
+  act_walking:true, act_outdoor_work:true, act_hayfever:true,
+  show_weather_card:true, dashboard_location_id:null, compact_card:false,
+  show_interpretation:true, include_in_helm:true, auto_refresh:'manual', show_last_updated:true,
+};
+
 // ── STALENESS THRESHOLDS ──────────────────────────────────────
 // How old a brief can be before showing a warning. Hard-coded for
 // now; intended to be configurable via Helm Settings in future.
@@ -1529,6 +1545,341 @@ function ReviewsPage() {
       <div style={{background:' var(--surface2)',border:'1px solid var(--border)',borderRadius:8,padding:12,fontSize:11,color:'var(--muted)',lineHeight:1.7,whiteSpace:'pre-wrap',fontFamily:'monospace',maxHeight:300,overflow:'auto'}}>
         {generatePrompt()}
       </div>
+    </div>
+  );
+}
+
+// ── WEATHER & OUTDOOR SETTINGS ────────────────────────────────
+function WeatherSettingsPage() {
+  const [tab, setTab]             = useState('locations');
+  const [locs, setLocs]           = useState([]);
+  const [ws, setWs]               = useState(null);
+  const [loading, setLoading]     = useState(true);
+  const [showArchived,setShowArc] = useState(false);
+  const [editLoc, setEditLoc]     = useState(null); // null | {} | {id,...}
+  const [saving, setSaving]       = useState(false);
+  const [uid, setUid]             = useState(null);
+
+  const STARTER_LOCS = uid => [
+    {user_id:uid,name:'Home',latitude:51.4700,longitude:-0.4543,location_type:'home',is_default:true,notes:'Update with your actual home coordinates.',sort_order:0},
+    {user_id:uid,name:'Keep Sailing North London',latitude:51.5390,longitude:-0.0220,location_type:'work_site',is_default:false,notes:'Lee Navigation area.',sort_order:1},
+    {user_id:uid,name:'Hampton',latitude:51.4163,longitude:-0.3706,location_type:'leisure',sort_order:2},
+    {user_id:uid,name:'Surbiton',latitude:51.3930,longitude:-0.3050,location_type:'leisure',sort_order:3},
+    {user_id:uid,name:'Guildford',latitude:51.2365,longitude:-0.5703,location_type:'leisure',sort_order:4},
+    {user_id:uid,name:'Wraysbury',latitude:51.4543,longitude:-0.5516,location_type:'leisure',sort_order:5},
+  ];
+
+  const loadLocs = async uid => {
+    const {data} = await supabase.from('weather_locations').select('*').eq('user_id',uid).order('sort_order').order('name');
+    return data||[];
+  };
+
+  const load = async () => {
+    setLoading(true);
+    const {data:{user}} = await supabase.auth.getUser();
+    setUid(user.id);
+    let [locsData, wsRes] = await Promise.all([
+      loadLocs(user.id),
+      supabase.from('weather_settings').select('*').eq('user_id',user.id).maybeSingle(),
+    ]);
+    if (locsData.length === 0) {
+      await supabase.from('weather_locations').insert(STARTER_LOCS(user.id));
+      locsData = await loadLocs(user.id);
+    }
+    setLocs(locsData);
+    setWs(wsRes.data || {...DEFAULT_WEATHER_SETTINGS});
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const persist = async updates => {
+    const updated = {...ws,...updates,user_id:uid,updated_at:new Date().toISOString()};
+    setWs(updated);
+    await supabase.from('weather_settings').upsert(updated,{onConflict:'user_id'});
+  };
+
+  const saveLoc = async () => {
+    if (!editLoc.name||!editLoc.latitude||!editLoc.longitude) return;
+    setSaving(true);
+    const payload = {
+      user_id:uid, name:editLoc.name.trim(),
+      latitude:parseFloat(editLoc.latitude), longitude:parseFloat(editLoc.longitude),
+      address:editLoc.address||null, postcode:editLoc.postcode||null,
+      location_type:editLoc.location_type||'other', notes:editLoc.notes||null,
+      is_active:true, is_default:!!editLoc.is_default,
+      sort_order:editLoc.sort_order||99,
+    };
+    if (editLoc.id) await supabase.from('weather_locations').update({...payload,updated_at:new Date().toISOString()}).eq('id',editLoc.id);
+    else await supabase.from('weather_locations').insert(payload);
+    const fresh = await loadLocs(uid); setLocs(fresh);
+    setSaving(false); setEditLoc(null);
+  };
+
+  const setDefault = async id => {
+    await supabase.from('weather_locations').update({is_default:false}).eq('user_id',uid);
+    await supabase.from('weather_locations').update({is_default:true}).eq('id',id);
+    await persist({dashboard_location_id:id});
+    const fresh = await loadLocs(uid); setLocs(fresh);
+  };
+
+  const archiveLoc = async id => {
+    await supabase.from('weather_locations').update({is_active:false}).eq('id',id);
+    setLocs(l=>l.map(x=>x.id===id?{...x,is_active:false}:x));
+  };
+
+  const restoreLoc = async id => {
+    await supabase.from('weather_locations').update({is_active:true}).eq('id',id);
+    setLocs(l=>l.map(x=>x.id===id?{...x,is_active:true}:x));
+  };
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
+  const activeLocs   = locs.filter(l=>l.is_active);
+  const archivedLocs = locs.filter(l=>!l.is_active);
+  const TYPE_LABEL   = {home:'🏠 Home',work_site:'⚓ Work Site',leisure:'🌊 Leisure',other:'📍 Other'};
+
+  // ── Location form (full-page) ─────────────────────────────
+  if (editLoc !== null) {
+    const isNew = !editLoc.id;
+    const mapsUrl = editLoc.latitude && editLoc.longitude
+      ? `https://www.google.com/maps?q=${editLoc.latitude},${editLoc.longitude}` : null;
+    return (
+      <div className="page">
+        <div className="row-between" style={{marginBottom:16}}>
+          <h1 style={{fontSize:18,fontWeight:700}}>{isNew?'Add Location':'Edit Location'}</h1>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setEditLoc(null)}>✕ Cancel</button>
+        </div>
+        <div className="field"><label className="label">Name</label>
+          <input className="input" value={editLoc.name||''} onChange={e=>setEditLoc(p=>({...p,name:e.target.value}))} placeholder="e.g. Hampton, Home"/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          <div className="field"><label className="label">Latitude</label>
+            <input className="input" type="number" step="0.0001" value={editLoc.latitude||''} onChange={e=>setEditLoc(p=>({...p,latitude:e.target.value}))} placeholder="51.4700"/>
+          </div>
+          <div className="field"><label className="label">Longitude</label>
+            <input className="input" type="number" step="0.0001" value={editLoc.longitude||''} onChange={e=>setEditLoc(p=>({...p,longitude:e.target.value}))} placeholder="-0.4543"/>
+          </div>
+        </div>
+        <div className="meta" style={{marginBottom:8}}>Get coordinates: Google Maps → right-click any point → copy the first item (lat, lng).</div>
+        {mapsUrl && <a href={mapsUrl} target="_blank" style={{fontSize:12,color:'var(--accent)',display:'block',marginBottom:12}}>→ Verify on Google Maps ↗</a>}
+        <div className="field"><label className="label">Type</label>
+          <select className="input" value={editLoc.location_type||'other'} onChange={e=>setEditLoc(p=>({...p,location_type:e.target.value}))}>
+            {Object.entries(TYPE_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+        <div className="field"><label className="label">Notes (optional)</label>
+          <input className="input" value={editLoc.notes||''} onChange={e=>setEditLoc(p=>({...p,notes:e.target.value}))} placeholder="e.g. Lee Navigation, Hackney Wick"/>
+        </div>
+        <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}}
+          onClick={saveLoc} disabled={saving||!editLoc.name||!editLoc.latitude||!editLoc.longitude}>
+          {saving?'Saving…':isNew?'Add Location':'Save Changes'}
+        </button>
+        {!isNew && (
+          <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',marginTop:8,color:'var(--muted)'}}
+            onClick={()=>{archiveLoc(editLoc.id);setEditLoc(null);}}>Archive this location</button>
+        )}
+      </div>
+    );
+  }
+
+  // ── Shared sub-components ─────────────────────────────────
+  const Toggle = ({label,val,onChange,detail=null}) => (
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0',borderBottom:'1px solid var(--border)'}}>
+      <div>
+        <div style={{fontSize:13}}>{label}</div>
+        {detail && <div className="meta">{detail}</div>}
+      </div>
+      <div onClick={()=>onChange(!val)} style={{width:40,height:22,borderRadius:11,background:val?'var(--accent)':'var(--surface2)',cursor:'pointer',flexShrink:0,position:'relative',transition:'background 0.2s',marginLeft:12}}>
+        <div style={{position:'absolute',top:2,left:val?20:2,width:18,height:18,borderRadius:9,background:'white',transition:'left 0.2s'}}/>
+      </div>
+    </div>
+  );
+
+  const Seg = ({label,val,onChange,opts}) => (
+    <div style={{padding:'11px 0',borderBottom:'1px solid var(--border)'}}>
+      <div style={{fontSize:13,marginBottom:6}}>{label}</div>
+      <div className="row" style={{gap:4,flexWrap:'wrap'}}>
+        {opts.map(([v,l])=>(
+          <button key={v} className={`btn btn-sm ${val===v?'btn-primary':'btn-ghost'}`} onClick={()=>onChange(v)}>{l}</button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const Num = ({label,val,unit,onChange}) => (
+    <div>
+      <div style={{fontSize:10,color:'var(--muted)',marginBottom:2}}>{label}</div>
+      <div className="row" style={{gap:4}}>
+        <input className="input" type="number" min={0} value={val??''} style={{padding:'5px 8px',fontSize:12}}
+          onChange={e=>onChange(parseFloat(e.target.value)||0)}/>
+        {unit&&<span style={{fontSize:10,color:'var(--muted)',flexShrink:0,alignSelf:'center'}}>{unit}</span>}
+      </div>
+    </div>
+  );
+
+  const TABS = ['locations','units','risk','activities','dashboard'];
+  const TAB_LBL = {locations:'Locations',units:'Units',risk:'Thresholds',activities:'Activities',dashboard:'Dashboard'};
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>Weather & Outdoor Settings</h1>
+      <div className="meta" style={{marginBottom:12}}>Locations, units, risk thresholds and activity preferences.</div>
+
+      {/* Tab bar */}
+      <div style={{display:'flex',gap:4,overflowX:'auto',paddingBottom:8,marginBottom:16,WebkitOverflowScrolling:'touch'}}>
+        {TABS.map(t=>(
+          <button key={t} className={`btn btn-sm ${tab===t?'btn-primary':'btn-ghost'}`}
+            style={{flexShrink:0}} onClick={()=>setTab(t)}>{TAB_LBL[t]}</button>
+        ))}
+      </div>
+
+      {/* ── LOCATIONS ── */}
+      {tab==='locations' && (
+        <div>
+          <button className="btn btn-primary btn-sm" style={{marginBottom:12}} onClick={()=>setEditLoc({location_type:'other'})}>+ Add Location</button>
+          {activeLocs.length===0 && <div className="empty"><div className="empty-icon">📍</div>No active locations.</div>}
+          {activeLocs.map(loc=>(
+            <div key={loc.id} className="card" style={{marginBottom:8,borderLeft:`3px solid ${loc.is_default?'var(--accent)':'var(--border)'}`}}>
+              <div>
+                <div className="row" style={{gap:6,marginBottom:2}}>
+                  <div style={{fontSize:14,fontWeight:600}}>{loc.name}</div>
+                  {loc.is_default && <span style={{fontSize:10,color:'var(--accent)',fontWeight:700}}>DEFAULT</span>}
+                  <span className="meta">{TYPE_LABEL[loc.location_type]||loc.location_type}</span>
+                </div>
+                <div className="meta">{parseFloat(loc.latitude).toFixed(4)}°N, {parseFloat(loc.longitude).toFixed(4)}°</div>
+                {loc.notes && <div className="meta" style={{marginTop:2}}>{loc.notes}</div>}
+              </div>
+              <div className="row" style={{gap:8,marginTop:8}}>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setEditLoc({...loc})}>Edit</button>
+                {!loc.is_default && <button className="btn btn-ghost btn-sm" onClick={()=>setDefault(loc.id)}>Set default</button>}
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)',marginLeft:'auto'}} onClick={()=>archiveLoc(loc.id)}>Archive</button>
+              </div>
+            </div>
+          ))}
+          {archivedLocs.length>0 && (
+            <div style={{marginTop:8}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setShowArc(s=>!s)} style={{marginBottom:8}}>
+                {showArchived?'Hide':'Show'} {archivedLocs.length} archived
+              </button>
+              {showArchived && archivedLocs.map(loc=>(
+                <div key={loc.id} className="card-sm" style={{marginBottom:6,opacity:0.5}}>
+                  <div className="row-between">
+                    <span>{loc.name}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>restoreLoc(loc.id)}>Restore</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── UNITS ── */}
+      {tab==='units' && ws && (
+        <div>
+          <Seg label="Temperature" val={ws.temp_unit} onChange={v=>persist({temp_unit:v})} opts={[['celsius','°C'],['fahrenheit','°F']]}/>
+          <Seg label="Wind speed" val={ws.wind_unit} onChange={v=>persist({wind_unit:v})} opts={[['mph','mph'],['knots','knots'],['kmh','km/h']]}/>
+          <Seg label="Precipitation" val={ws.rain_unit} onChange={v=>persist({rain_unit:v})} opts={[['mm','mm'],['inches','inches']]}/>
+          <Seg label="Time format" val={ws.time_format} onChange={v=>persist({time_format:v})} opts={[['24h','24h'],['12h','12h']]}/>
+          <div style={{height:8}}/>
+          <Toggle label="Show UV index" val={ws.show_uv} onChange={v=>persist({show_uv:v})}/>
+          <Toggle label="Show pollen" val={ws.show_pollen} onChange={v=>persist({show_pollen:v})}/>
+          <Toggle label="Show thunderstorm risk" val={ws.thunder_show} onChange={v=>persist({thunder_show:v})}/>
+          <div className="meta" style={{marginTop:12}}>Settings save automatically when changed.</div>
+        </div>
+      )}
+
+      {/* ── RISK THRESHOLDS ── */}
+      {tab==='risk' && ws && (
+        <div>
+          <div className="meta" style={{marginBottom:12}}>
+            These levels trigger Watch / Caution / Avoid labels on the weather card.
+            Wind thresholds are stored in mph; adjust to match your experience level.
+          </div>
+          <div className="section-title">Wind speed (mph)</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+            <Num label="Watch" val={ws.wind_watch_mph} unit="mph" onChange={v=>setWs(p=>({...p,wind_watch_mph:v}))}/>
+            <Num label="Caution" val={ws.wind_caution_mph} unit="mph" onChange={v=>setWs(p=>({...p,wind_caution_mph:v}))}/>
+            <Num label="Avoid" val={ws.wind_avoid_mph} unit="mph" onChange={v=>setWs(p=>({...p,wind_avoid_mph:v}))}/>
+          </div>
+          <div className="section-title">Gusts (mph)</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+            <Num label="Watch" val={ws.gust_watch_mph} unit="mph" onChange={v=>setWs(p=>({...p,gust_watch_mph:v}))}/>
+            <Num label="Caution" val={ws.gust_caution_mph} unit="mph" onChange={v=>setWs(p=>({...p,gust_caution_mph:v}))}/>
+            <Num label="Avoid" val={ws.gust_avoid_mph} unit="mph" onChange={v=>setWs(p=>({...p,gust_avoid_mph:v}))}/>
+          </div>
+          <div className="section-title">Rain probability (%)</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+            <Num label="Watch %" val={ws.rain_watch_pct} onChange={v=>setWs(p=>({...p,rain_watch_pct:v}))}/>
+            <Num label="Caution %" val={ws.rain_caution_pct} onChange={v=>setWs(p=>({...p,rain_caution_pct:v}))}/>
+            <Num label="Avoid %" val={ws.rain_avoid_pct} onChange={v=>setWs(p=>({...p,rain_avoid_pct:v}))}/>
+          </div>
+          <div className="section-title">UV index</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+            <Num label="Watch" val={ws.uv_watch} onChange={v=>setWs(p=>({...p,uv_watch:v}))}/>
+            <Num label="Caution" val={ws.uv_caution} onChange={v=>setWs(p=>({...p,uv_caution:v}))}/>
+            <Num label="Avoid" val={ws.uv_avoid} onChange={v=>setWs(p=>({...p,uv_avoid:v}))}/>
+          </div>
+          <div className="section-title">Pollen — grass (µg/m³)</div>
+          <div className="meta" style={{marginBottom:8}}>Grass pollen via Copernicus data. Low &lt;15 · Moderate 15–35 · High 35–70 · Very high &gt;70.</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+            <Num label="Watch" val={ws.pollen_watch} unit="µg" onChange={v=>setWs(p=>({...p,pollen_watch:v}))}/>
+            <Num label="Caution" val={ws.pollen_caution} unit="µg" onChange={v=>setWs(p=>({...p,pollen_caution:v}))}/>
+            <Num label="Avoid" val={ws.pollen_avoid} unit="µg" onChange={v=>setWs(p=>({...p,pollen_avoid:v}))}/>
+          </div>
+          <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}}
+            onClick={()=>persist(ws)} disabled={saving}>{saving?'Saving…':'Save thresholds'}</button>
+        </div>
+      )}
+
+      {/* ── ACTIVITIES ── */}
+      {tab==='activities' && ws && (
+        <div>
+          <div className="meta" style={{marginBottom:12}}>Enabled activities shape Helm's outdoor interpretation of weather conditions.</div>
+          {[
+            ['act_watersports','Watersports / Work delivery','FL teaching on water — highlights wind, gusts and thunderstorm risk'],
+            ['act_sailing','Sailing','Dinghy and keelboat — wind and sea conditions'],
+            ['act_sup','SUP','Standup paddleboarding'],
+            ['act_winging','Winging','Wing foiling — higher wind threshold needed'],
+            ['act_cycling','Cycling','Road or off-road cycling — rain and wind'],
+            ['act_swimming','Outdoor swimming','Open water — temperature and conditions'],
+            ['act_gardening','Gardening','Sunset, rain, frost awareness'],
+            ['act_walking','Walking / Running','Wind and rain awareness'],
+            ['act_outdoor_work','General outdoor work','Other outdoor tasks'],
+            ['act_hayfever','Hayfever management','Pollen alerts when levels are moderate or high'],
+          ].map(([k,l,d])=>(
+            <Toggle key={k} label={l} detail={d} val={ws[k]} onChange={v=>persist({[k]:v})}/>
+          ))}
+        </div>
+      )}
+
+      {/* ── DASHBOARD ── */}
+      {tab==='dashboard' && ws && (
+        <div>
+          <Toggle label="Show weather card on dashboard" val={ws.show_weather_card} onChange={v=>persist({show_weather_card:v})}/>
+          <div style={{padding:'11px 0',borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:13,marginBottom:6}}>Default dashboard location</div>
+            <select className="input" value={ws.dashboard_location_id||''} onChange={e=>persist({dashboard_location_id:e.target.value||null})}>
+              <option value="">Auto (first active default)</option>
+              {activeLocs.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </div>
+          <Toggle label="Compact card" detail="Fewer fields on dashboard" val={ws.compact_card} onChange={v=>persist({compact_card:v})}/>
+          <Toggle label="Show Helm outdoor interpretation" detail="Rule-based interpretation line below the card" val={ws.show_interpretation} onChange={v=>persist({show_interpretation:v})}/>
+          <Toggle label="Include weather in Plan My Day" detail="Helm reads the current weather snapshot when generating a brief" val={ws.include_in_helm} onChange={v=>persist({include_in_helm:v})}/>
+          <Toggle label="Show last updated time" val={ws.show_last_updated} onChange={v=>persist({show_last_updated:v})}/>
+          <div style={{padding:'11px 0',borderBottom:'1px solid var(--border)'}}>
+            <div style={{fontSize:13,marginBottom:6}}>Auto-refresh</div>
+            <select className="input" value={ws.auto_refresh||'manual'} onChange={e=>persist({auto_refresh:e.target.value})}>
+              <option value="manual">Manual only (tap refresh)</option>
+              <option value="off">Off</option>
+              <option value="hourly">Every hour</option>
+              <option value="3h">Every 3 hours</option>
+            </select>
+          </div>
+          <div className="meta" style={{marginTop:12}}>All settings save automatically when changed.</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3624,34 +3975,36 @@ function App() {
   ];
 
   const moreItems = [
-    { id:'helm',         label:ASSISTANT_NAME,            icon:'zap' },
-    { id:'helmsettings', label:ASSISTANT_NAME+' Settings', icon:'box' },
-    { id:'calendar',     label:'Calendar',                 icon:'clock' },
-    { id:'projects',     label:'Projects',                 icon:'folder' },
-    { id:'areas',        label:'Areas & Roles',            icon:'layers' },
-    { id:'decisions',    label:'Decisions & Assets',       icon:'box' },
-    { id:'reviews',      label:'Weekly Review',            icon:'clock' },
-    { id:'roadmap',      label:'Roadmap Queue',            icon:'alert' },
-    { id:'systemhealth', label:'System Health',            icon:'alert' },
-    { id:'features',     label:'Features Guide',           icon:'alert' },
-    { id:'debug',        label:'Debug Log',                icon:'alert' },
+    { id:'helm',          label:ASSISTANT_NAME,              icon:'zap' },
+    { id:'helmsettings',  label:ASSISTANT_NAME+' Settings',  icon:'box' },
+    { id:'weathersettings',label:'Weather & Outdoor',         icon:'alert' },
+    { id:'calendar',      label:'Calendar',                   icon:'clock' },
+    { id:'projects',      label:'Projects',                   icon:'folder' },
+    { id:'areas',         label:'Areas & Roles',              icon:'layers' },
+    { id:'decisions',     label:'Decisions & Assets',         icon:'box' },
+    { id:'reviews',       label:'Weekly Review',              icon:'clock' },
+    { id:'roadmap',       label:'Roadmap Queue',              icon:'alert' },
+    { id:'systemhealth',  label:'System Health',              icon:'alert' },
+    { id:'features',      label:'Features Guide',             icon:'alert' },
+    { id:'debug',         label:'Debug Log',                  icon:'alert' },
   ];
 
   const renderPage = () => {
-    if (page==='dashboard')    return <DashboardPage user={user} onNavigate={setPage}/>;
-    if (page==='helm')         return <HelmPage/>;
-    if (page==='helmsettings') return <HelmSettingsPage/>;
-    if (page==='projects')     return <ProjectsPage/>;
-    if (page==='tasks')        return <TasksPage/>;
-    if (page==='capture')      return <QuickCapturePage/>;
-    if (page==='calendar')     return <CalendarPage/>;
-    if (page==='areas')        return <AreasPage/>;
-    if (page==='decisions')    return <DecisionsAssetsPage/>;
-    if (page==='reviews')      return <ReviewsPage/>;
-    if (page==='roadmap')      return <RoadmapQueuePage/>;
-    if (page==='systemhealth') return <SystemHealthPage onNavigate={setPage}/>;
-    if (page==='features')     return <FeaturesWikiPage/>;
-    if (page==='debug')        return <DebugPage/>;
+    if (page==='dashboard')       return <DashboardPage user={user} onNavigate={setPage}/>;
+    if (page==='helm')            return <HelmPage/>;
+    if (page==='helmsettings')    return <HelmSettingsPage/>;
+    if (page==='weathersettings') return <WeatherSettingsPage/>;
+    if (page==='projects')        return <ProjectsPage/>;
+    if (page==='tasks')           return <TasksPage/>;
+    if (page==='capture')         return <QuickCapturePage/>;
+    if (page==='calendar')        return <CalendarPage/>;
+    if (page==='areas')           return <AreasPage/>;
+    if (page==='decisions')       return <DecisionsAssetsPage/>;
+    if (page==='reviews')         return <ReviewsPage/>;
+    if (page==='roadmap')         return <RoadmapQueuePage/>;
+    if (page==='systemhealth')    return <SystemHealthPage onNavigate={setPage}/>;
+    if (page==='features')        return <FeaturesWikiPage/>;
+    if (page==='debug')           return <DebugPage/>;
     if (page==='more') return (
       <div className="page">
         <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>More</h1>
@@ -3681,7 +4034,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -3690,7 +4043,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','weathersettings','calendar','projects','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
