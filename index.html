@@ -201,6 +201,190 @@ const DEFAULT_WEATHER_SETTINGS = {
   show_interpretation:true, include_in_helm:true, auto_refresh:'manual', show_last_updated:true,
 };
 
+// ── WEATHER MODULE-LEVEL CACHE ────────────────────────────────
+// Persists across component unmounts (lost on page refresh — by design).
+// Lets Helm read the weather snapshot without re-fetching.
+let _wxCache    = { data:null, locId:null, ts:null };
+let _wxSettings = null;  // latest loaded weather_settings row
+let _wxLocation = null;  // latest loaded weather_locations default row
+
+// Convert mph threshold to display unit for comparison
+const mphToUnit = (mph, unit) =>
+  unit==='knots' ? mph*0.869 : unit==='kmh' ? mph*1.609 : mph;
+
+// WMO weather code → human label
+const WMO_LABEL = {
+  0:'☀️ Clear sky', 1:'🌤 Mainly clear', 2:'⛅ Partly cloudy', 3:'☁️ Overcast',
+  45:'🌫 Fog', 48:'🌫 Icy fog',
+  51:'🌦 Light drizzle', 53:'🌦 Drizzle', 55:'🌧 Heavy drizzle',
+  61:'🌧 Light rain', 63:'🌧 Moderate rain', 65:'🌧 Heavy rain',
+  71:'🌨 Light snow', 73:'🌨 Snow', 75:'❄️ Heavy snow', 77:'❄️ Snow grains',
+  80:'🌦 Light showers', 81:'🌧 Showers', 82:'🌧 Heavy showers',
+  85:'🌨 Snow showers', 86:'❄️ Heavy snow showers',
+  95:'⛈ Thunderstorm', 96:'⛈ Thunderstorm + hail', 99:'⛈ Thunderstorm + heavy hail',
+};
+const wmoLabel = code => WMO_LABEL[code] || '🌤 Conditions';
+
+// ── FETCH WEATHER (Open-Meteo, no API key needed) ─────────────
+async function fetchWeather(lat, lng, ws, locName) {
+  // Map our wind_unit to Open-Meteo's parameter
+  const apiWind = ws?.wind_unit === 'knots' ? 'kn' : ws?.wind_unit === 'kmh' ? 'kmh' : 'mph';
+  const weatherUrl = [
+    'https://api.open-meteo.com/v1/forecast',
+    `?latitude=${lat}&longitude=${lng}`,
+    '&current=temperature_2m,precipitation_probability,rain,wind_speed_10m,wind_gusts_10m,weather_code,uv_index',
+    '&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset',
+    ',precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max',
+    '&forecast_days=1&timezone=Europe%2FLondon',
+    `&wind_speed_unit=${apiWind}`,
+  ].join('');
+
+  const pollenUrl = [
+    'https://air-quality-api.open-meteo.com/v1/air-quality',
+    `?latitude=${lat}&longitude=${lng}`,
+    '&hourly=grass_pollen&forecast_days=1&timezone=Europe%2FLondon',
+  ].join('');
+
+  try {
+    const [wRes, pRes] = await Promise.all([
+      fetch(weatherUrl),
+      fetch(pollenUrl).catch(()=>null),
+    ]);
+    if (!wRes.ok) return { error:`Weather API error ${wRes.status}`, fetched_at:new Date().toISOString() };
+    const w = await wRes.json();
+
+    let grassPollen = null;
+    if (pRes?.ok) {
+      const p = await pRes.json().catch(()=>({}));
+      const vals = (p.hourly?.grass_pollen||[]).filter(v=>v!=null&&v>=0);
+      if (vals.length) grassPollen = Math.max(...vals);
+    }
+
+    return {
+      temp:          w.current?.temperature_2m,
+      rain_prob:     w.current?.precipitation_probability,
+      wind:          w.current?.wind_speed_10m,
+      gusts:         w.current?.wind_gusts_10m,
+      weather_code:  w.current?.weather_code,
+      uv:            w.current?.uv_index,
+      temp_max:      w.daily?.temperature_2m_max?.[0],
+      temp_min:      w.daily?.temperature_2m_min?.[0],
+      sunrise:       w.daily?.sunrise?.[0],
+      sunset:        w.daily?.sunset?.[0],
+      rain_prob_max: w.daily?.precipitation_probability_max?.[0],
+      wind_max:      w.daily?.wind_speed_10m_max?.[0],
+      gusts_max:     w.daily?.wind_gusts_10m_max?.[0],
+      uv_max:        w.daily?.uv_index_max?.[0],
+      daily_code:    w.daily?.weather_code?.[0],
+      grass_pollen:  grassPollen,
+      wind_unit:     ws?.wind_unit || 'mph',
+      location_name: locName || null,
+      fetched_at:    new Date().toISOString(),
+    };
+  } catch(err) {
+    return { error: String(err), fetched_at: new Date().toISOString() };
+  }
+}
+
+// ── RISK CALCULATION ─────────────────────────────────────────
+const RISK_LEVELS = ['low','watch','caution','avoid'];
+function calcOutdoorRisk(wx, ws) {
+  if (!wx || wx.error) return { overall:'unknown', triggers:[] };
+  const s = ws || DEFAULT_WEATHER_SETTINGS;
+  const unit = s.wind_unit || 'mph';
+  const triggers = [];
+
+  const check = (val, watch, caution, avoid, reason, displayUnit='') => {
+    if (val == null) return;
+    if (val >= avoid)  triggers.push({level:'avoid',  reason, value:val, unit:displayUnit});
+    else if (val >= caution) triggers.push({level:'caution',reason, value:val, unit:displayUnit});
+    else if (val >= watch)   triggers.push({level:'watch',  reason, value:val, unit:displayUnit});
+  };
+
+  // Wind & gusts (API already in user's preferred unit; thresholds stored in mph → convert)
+  check(wx.wind,  mphToUnit(s.wind_watch_mph,unit), mphToUnit(s.wind_caution_mph,unit), mphToUnit(s.wind_avoid_mph,unit),  'Wind',  unit);
+  check(wx.gusts, mphToUnit(s.gust_watch_mph,unit), mphToUnit(s.gust_caution_mph,unit), mphToUnit(s.gust_avoid_mph,unit),  'Gusts', unit);
+
+  // Rain (max of current and daily peak)
+  const rain = Math.max(wx.rain_prob||0, wx.rain_prob_max||0);
+  check(rain, s.rain_watch_pct, s.rain_caution_pct, s.rain_avoid_pct, 'Rain', '%');
+
+  // UV
+  if (s.show_uv !== false) check(wx.uv_max||wx.uv, s.uv_watch, s.uv_caution, s.uv_avoid, 'UV', '');
+
+  // Thunderstorm (WMO codes 95/96/99)
+  if (s.thunder_show !== false) {
+    const code = wx.weather_code || wx.daily_code || 0;
+    if ([95,96,99].includes(code)) triggers.push({level:'avoid',  reason:'Thunderstorm', value:null, unit:''});
+    else if ([91,92].includes(code)) triggers.push({level:'caution',reason:'Thunderstorm', value:null, unit:''});
+  }
+
+  // Pollen (hayfever activity must be on)
+  if (s.show_pollen !== false && s.act_hayfever !== false && wx.grass_pollen != null) {
+    check(wx.grass_pollen, s.pollen_watch, s.pollen_caution, s.pollen_avoid, 'Pollen', 'µg/m³');
+  }
+
+  const overall = triggers.reduce((max,t) => RISK_LEVELS.indexOf(t.level)>RISK_LEVELS.indexOf(max)?t.level:max, 'low');
+  return { overall, triggers };
+}
+
+// ── OUTDOOR INTERPRETATION (rule-based, no AI call) ───────────
+function generateOutdoorInterpretation(wx, risk, ws) {
+  if (!wx || wx.error || !risk) return null;
+  const s  = ws || DEFAULT_WEATHER_SETTINGS;
+  const tr = risk.triggers;
+  const lines = [];
+
+  const hasThunder  = tr.find(t=>t.reason==='Thunderstorm');
+  const windBad     = tr.find(t=>(t.reason==='Wind'||t.reason==='Gusts')&&(t.level==='caution'||t.level==='avoid'));
+  const pollenBad   = tr.find(t=>t.reason==='Pollen');
+  const uvBad       = tr.find(t=>t.reason==='UV'&&(t.level==='caution'||t.level==='avoid'));
+  const rainBad     = tr.find(t=>t.reason==='Rain'&&t.level!=='low');
+  const sunsetTime  = wx.sunset?.split('T')[1]?.slice(0,5);
+  const sunsetHour  = sunsetTime ? parseInt(sunsetTime.split(':')[0]) : null;
+
+  if (hasThunder) {
+    if (s.act_watersports||s.act_sailing) {
+      lines.push('⛈ Thunderstorm risk. Check official forecasts, site procedures and DRA before any water activity.');
+    } else {
+      lines.push('⛈ Thunderstorm risk. Check official forecasts before outdoor activity.');
+    }
+  }
+
+  if (windBad && (s.act_watersports||s.act_sailing)) {
+    const lvl = windBad.level==='avoid'?'High':'Elevated';
+    lines.push(`💨 ${lvl} wind/gusts for water activity. Refer to official forecast and site procedures.`);
+  } else if (windBad && s.act_cycling) {
+    lines.push(`💨 ${windBad.level==='avoid'?'Strong':'Gusty'} conditions — factor in for cycling.`);
+  }
+
+  if (pollenBad && s.act_hayfever) {
+    const val = pollenBad.value!=null ? ` (${Math.round(pollenBad.value)} µg/m³)` : '';
+    if (pollenBad.level==='avoid')   lines.push(`🤧 Very high pollen${val}. Take antihistamines early. Limit outdoor exposure if symptomatic.`);
+    else if (pollenBad.level==='caution') lines.push(`🌿 High pollen today${val}. Consider antihistamines before going out.`);
+    else lines.push(`🌿 Moderate pollen${val}. Monitor if you're symptomatic.`);
+  }
+
+  if (uvBad && s.show_uv!==false) {
+    lines.push(`☀️ UV ${uvBad.level==='avoid'?'very high':'high'} (index ${Math.round(uvBad.value||0)}). Use sun protection.`);
+  }
+
+  if (rainBad && s.act_gardening && !windBad && !hasThunder) {
+    lines.push(`🌧 Rain likely (${Math.round(rainBad.value||0)}%). Factor into garden plans.`);
+  }
+
+  if (sunsetHour!=null && (s.act_gardening||s.act_cycling||s.act_walking)) {
+    if (sunsetHour >= 20) lines.push(`🌅 Sunset ${sunsetTime} — good evening light for outdoor activities.`);
+    else if (sunsetHour < 17) lines.push(`🌙 Sunset ${sunsetTime} — plan outdoor tasks earlier in the day.`);
+  }
+
+  if (lines.length===0 && risk.overall==='low') {
+    lines.push('✅ Good outdoor conditions. No significant concerns today.');
+  }
+
+  return lines.join('\n');
+}
+
 // ── STALENESS THRESHOLDS ──────────────────────────────────────
 // How old a brief can be before showing a warning. Hard-coded for
 // now; intended to be configurable via Helm Settings in future.
@@ -396,6 +580,35 @@ async function fetchTodaysBrief() {
 async function callHelm(type, extra = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return { error: 'no_session' };
+
+  // Attach weather snapshot if available and user has opted in
+  let weatherContext = null;
+  if (_wxCache.data && !_wxCache.data.error && _wxSettings?.include_in_helm !== false) {
+    const wxd = _wxCache.data;
+    const risk = calcOutdoorRisk(wxd, _wxSettings);
+    const staleMs = Date.now() - new Date(wxd.fetched_at||0).getTime();
+    weatherContext = {
+      location:      wxd.location_name || (_wxLocation?.name||null),
+      temp_c:        wxd.temp,
+      temp_max_c:    wxd.temp_max,
+      temp_min_c:    wxd.temp_min,
+      wind:          wxd.wind!=null ? Math.round(wxd.wind) : null,
+      gusts:         wxd.gusts!=null ? Math.round(wxd.gusts) : null,
+      wind_unit:     wxd.wind_unit || 'mph',
+      rain_prob:     Math.max(wxd.rain_prob||0, wxd.rain_prob_max||0),
+      uv_max:        wxd.uv_max,
+      grass_pollen:  wxd.grass_pollen!=null ? Math.round(wxd.grass_pollen) : null,
+      sunrise:       wxd.sunrise?.split('T')[1]?.slice(0,5),
+      sunset:        wxd.sunset?.split('T')[1]?.slice(0,5),
+      condition:     wmoLabel(wxd.weather_code||wxd.daily_code),
+      risk_overall:  risk.overall,
+      risk_triggers: risk.triggers.map(t=>`${t.reason}: ${t.level}`),
+      interpretation: generateOutdoorInterpretation(wxd, risk, _wxSettings),
+      fetched_at:    wxd.fetched_at,
+      is_stale:      staleMs > 4*3600000,
+    };
+  }
+
   try {
     const res = await fetch(HELM_FN_URL, {
       method: 'POST',
@@ -404,7 +617,7 @@ async function callHelm(type, extra = {}) {
         'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ type, ...extra }),
+      body: JSON.stringify({ type, weatherContext, ...extra }),
     });
     return await res.json();
   } catch (e) {
@@ -2513,6 +2726,37 @@ const SYSTEM_REGISTRY = [
       };
     },
   },
+  // ── WEATHER ───────────────────────────────────────────────────
+  {
+    id:'weather', name:'Weather & Outdoor Risk', category:'Monitoring',
+    required:false, usesSecrets:false, accessType:'read-only',
+    description:'Open-Meteo weather (no API key required) + Copernicus pollen data. Called directly from the browser. Provides wind, rain, UV, thunderstorm risk and grass pollen.',
+    settingsPage:'weathersettings', plannedOnly:false,
+    getStatus:(h,flags)=>{
+      if (flags && !flags.show_weather_card) return { status:'Disabled', detail:'Weather card disabled in settings.' };
+      const lastFetch = h.logs?.find(l=>l.function_name==='weather'&&l.action==='fetch'&&l.status==='success');
+      const lastErr   = h.logs?.find(l=>l.function_name==='weather'&&l.action==='fetch'&&l.status==='error');
+      if (lastFetch) return {
+        status:'Working', detail:`Last fetch ${relTime(lastFetch.created_at)} · ${_wxSettings?.include_in_helm?'Included in Helm':'Not included in Helm'}`,
+        lastSuccess: lastFetch.created_at,
+      };
+      if (lastErr) return { status:'Failed', detail:`Last error: ${lastErr.error_code}`, lastError: lastErr.error_detail };
+      return { status:'Not configured', detail:'Weather not yet fetched. Open dashboard and tap Fetch.' };
+    },
+  },
+  {
+    id:'pollen', name:'Pollen / Grass Pollen', category:'Monitoring',
+    required:false, usesSecrets:false, accessType:'read-only',
+    description:'Grass pollen data from Copernicus CAMS via Open-Meteo Air Quality API. No API key required. Bundled with weather fetch.',
+    settingsPage:'weathersettings', plannedOnly:false,
+    getStatus:(h,flags)=>{
+      const lastFetch = h.logs?.find(l=>l.function_name==='weather'&&l.action==='fetch'&&l.status==='success');
+      if (!_wxSettings?.show_pollen) return { status:'Disabled', detail:'Pollen display disabled in settings.' };
+      if (lastFetch) return { status:'Working', detail:'Fetched alongside weather data.', lastSuccess: lastFetch.created_at };
+      return { status:'Unknown', detail:'Fetch weather to test.' };
+    },
+  },
+
   // ── PLANNED ───────────────────────────────────────────────────
   {
     id:'travel_buffer', name:'Travel Buffer Assistant', category:'Planned',
@@ -3741,28 +3985,176 @@ function buildAttention(data) {
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────
+// ── WEATHER CARD ──────────────────────────────────────────────
+function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
+  if (!ws?.show_weather_card) return null;
+
+  const RISK_CFG = {
+    low:     {label:'Low',     bg:'rgba(34,197,94,0.12)',  colour:'var(--green)'},
+    watch:   {label:'Watch',   bg:'rgba(245,158,11,0.12)', colour:'var(--amber)'},
+    caution: {label:'Caution', bg:'rgba(245,158,11,0.12)', colour:'var(--amber)'},
+    avoid:   {label:'Avoid',   bg:'rgba(239,68,68,0.12)',  colour:'var(--red)'},
+    unknown: {label:'—',       bg:'var(--surface2)',        colour:'var(--muted)'},
+  };
+
+  const locName = location?.name || 'Your location';
+
+  if (fetching) return (
+    <div className="card" style={{marginBottom:14,minHeight:60,display:'flex',alignItems:'center'}}>
+      <div className="meta">☁️ Fetching weather for {locName}…</div>
+    </div>
+  );
+
+  if (!wx) return (
+    <div className="card" style={{marginBottom:14}}>
+      <div className="row-between" style={{marginBottom:6}}>
+        <div style={{fontSize:13,fontWeight:600}}>🌤 Weather & Outdoor Risk</div>
+        <button className="btn btn-primary btn-sm" onClick={onRefresh}>Fetch</button>
+      </div>
+      <div className="meta">{locName} — tap Fetch to load today's conditions.</div>
+    </div>
+  );
+
+  if (wx.error) return (
+    <div className="card" style={{marginBottom:14,borderLeft:'3px solid var(--red)'}}>
+      <div className="row-between" style={{marginBottom:4}}>
+        <div style={{fontSize:13,fontWeight:600}}>🌤 Weather</div>
+        <button className="btn btn-ghost btn-sm" onClick={onRefresh}>↻ Retry</button>
+      </div>
+      <div className="meta" style={{color:'var(--red)'}}>Unable to fetch: {wx.error}</div>
+    </div>
+  );
+
+  const risk    = calcOutdoorRisk(wx, ws);
+  const interp  = ws.show_interpretation ? generateOutdoorInterpretation(wx, risk, ws) : null;
+  const rc      = RISK_CFG[risk.overall] || RISK_CFG.unknown;
+  const unit    = ws.wind_unit || 'mph';
+  const isFahr  = ws.temp_unit === 'fahrenheit';
+  const fmtTemp = c => c!=null ? (isFahr ? `${Math.round(c*9/5+32)}°F` : `${Math.round(c)}°C`) : '—';
+  const sunriseT = wx.sunrise?.split('T')[1]?.slice(0,5);
+  const sunsetT  = wx.sunset?.split('T')[1]?.slice(0,5);
+  const rainProb = Math.max(wx.rain_prob||0, wx.rain_prob_max||0);
+  const isCompact = ws.compact_card;
+  const watersports = ws.act_watersports || ws.act_sailing;
+
+  return (
+    <div className="card" style={{marginBottom:14}}>
+      {/* Header row */}
+      <div className="row-between" style={{marginBottom:8}}>
+        <div className="row" style={{gap:6}}>
+          <span style={{fontSize:13,fontWeight:600}}>🌤 Weather</span>
+          <span className="meta">{locName}</span>
+        </div>
+        <div className="row" style={{gap:6}}>
+          <span style={{fontSize:11,fontWeight:700,color:rc.colour,background:rc.bg,padding:'2px 8px',borderRadius:4}}>{rc.label}</span>
+          <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px',fontSize:12}} onClick={onRefresh}>↻</button>
+        </div>
+      </div>
+
+      {/* Temperature + condition */}
+      <div className="row" style={{gap:10,marginBottom:8,alignItems:'flex-end'}}>
+        <div style={{fontSize:30,fontWeight:700,lineHeight:1}}>{fmtTemp(wx.temp)}</div>
+        <div>
+          <div style={{fontSize:12,lineHeight:1.3}}>{wmoLabel(wx.weather_code||wx.daily_code)}</div>
+          <div className="meta">{fmtTemp(wx.temp_min)} – {fmtTemp(wx.temp_max)}</div>
+        </div>
+      </div>
+
+      {/* Key stats */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+        {wx.wind!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
+          <div style={{fontSize:13,fontWeight:600}}>{Math.round(wx.wind)} {unit}</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Wind</div>
+        </div>}
+        {wx.gusts!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
+          <div style={{fontSize:13,fontWeight:600}}>{Math.round(wx.gusts)} {unit}</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Gusts</div>
+        </div>}
+        {rainProb!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
+          <div style={{fontSize:13,fontWeight:600}}>{rainProb}%</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Rain</div>
+        </div>}
+      </div>
+
+      {/* Extra detail (non-compact) */}
+      {!isCompact && (
+        <div className="row" style={{gap:14,flexWrap:'wrap',marginBottom:risk.triggers.length>0?8:0}}>
+          {ws.show_uv&&wx.uv_max!=null && <span className="meta">UV {Math.round(wx.uv_max)}</span>}
+          {ws.show_pollen&&wx.grass_pollen!=null && <span className="meta">🌿 {Math.round(wx.grass_pollen)} µg/m³</span>}
+          {sunriseT && <span className="meta">↑ {sunriseT}</span>}
+          {sunsetT  && <span className="meta">↓ {sunsetT}</span>}
+        </div>
+      )}
+
+      {/* Risk trigger pills */}
+      {risk.triggers.length>0 && (
+        <div className="row" style={{gap:5,flexWrap:'wrap',marginBottom:interp?8:0}}>
+          {risk.triggers.map((t,i)=>{
+            const col = t.level==='avoid'?'var(--red)':t.level==='caution'?'var(--amber)':'var(--muted)';
+            const bg  = t.level==='avoid'?'rgba(239,68,68,0.08)':t.level==='caution'?'rgba(245,158,11,0.08)':'var(--surface2)';
+            return <span key={i} style={{fontSize:10,color:col,background:bg,padding:'2px 7px',borderRadius:4}}>
+              {t.reason}{t.value!=null?' '+Math.round(t.value)+(t.unit?' '+t.unit:''):''}
+            </span>;
+          })}
+        </div>
+      )}
+
+      {/* Interpretation */}
+      {interp && (
+        <div style={{fontSize:12,color:'var(--muted)',lineHeight:1.55,paddingTop:8,borderTop:'1px solid var(--border)',marginBottom:watersports&&['caution','avoid'].includes(risk.overall)?6:0}}>
+          {interp.split('\n').map((l,i)=><div key={i} style={{marginBottom:i<interp.split('\n').length-1?4:0}}>{l}</div>)}
+        </div>
+      )}
+
+      {/* Watersports disclaimer */}
+      {watersports && ['caution','avoid'].includes(risk.overall) && (
+        <div style={{fontSize:10,color:'var(--muted)',fontStyle:'italic',paddingTop:5,borderTop:'1px solid var(--border)'}}>
+          For water activity: refer to official forecasts, site procedures and dynamic risk assessment.
+        </div>
+      )}
+
+      {/* Last updated */}
+      {ws.show_last_updated && wx.fetched_at && (
+        <div className="meta" style={{marginTop:6,fontSize:10}}>Updated {relTime(wx.fetched_at)}</div>
+      )}
+    </div>
+  );
+}
+
 function DashboardPage({ user, onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [todayEvents, setTodayEvents] = useState([]);
-  const [calState, setCalState] = useState(null); // null | 'ok' | error code
-  const [brief, setBrief] = useState(undefined);   // undefined=loading, null=none, object=brief
+  const [calState, setCalState] = useState(null);
+  const [brief, setBrief] = useState(undefined);
   const [briefBusy, setBriefBusy] = useState(false);
   const [showBriefDetail, setShowBriefDetail] = useState(false);
+  const [wx, setWx] = useState(null);           // weather data
+  const [wxFetching, setWxFetching] = useState(false);
 
   const load = async () => {
     const today = localDateKey();
-    const [tasks, waiting, decisions, projects, assets] = await Promise.all([
+    const [tasks, waiting, decisions, projects, assets, wsRes, wlocRes] = await Promise.all([
       supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
       supabase.from('waiting_for').select('*').eq('status','open'),
       supabase.from('decisions').select('*').eq('status','open'),
       supabase.from('projects').select('*').eq('status','active'),
       supabase.from('assets').select('*').eq('status','active'),
+      supabase.from('weather_settings').select('*').maybeSingle(),
+      supabase.from('weather_locations').select('*').eq('is_active',true).order('sort_order').limit(6),
     ]);
     setData({ tasks:tasks.data||[], waiting:waiting.data||[], decisions:decisions.data||[], projects:projects.data||[], assets:assets.data||[], today });
     setLoading(false);
-    // Calendar loads separately so a slow/absent calendar never blocks the dashboard
+
+    // Resolve which location to use for weather
+    const wsCfg = wsRes.data || DEFAULT_WEATHER_SETTINGS;
+    const wlocs  = wlocRes.data || [];
+    let wloc = wlocs.find(l=>l.id===wsCfg.dashboard_location_id) || wlocs.find(l=>l.is_default) || wlocs[0] || null;
+    _wxSettings = wsCfg;
+    _wxLocation = wloc;
+
+    // Calendar — non-blocking
     fetchCalendarEvents(1).then(r=>{
       if (r && r.events) {
         const todayKey = localDateKey();
@@ -3770,10 +4162,53 @@ function DashboardPage({ user, onNavigate }) {
       }
       setCalState(r?.error || 'ok');
     });
-    // Today's stored Helm brief — READ ONLY, never calls Claude on load
+
+    // Today's Helm brief — read-only
     fetchTodaysBrief().then(b=>setBrief(b));
+
+    // Weather — use cache if available; auto-fetch based on setting
+    if (wsCfg.show_weather_card && wloc) {
+      if (_wxCache.data && _wxCache.locId===wloc.id) {
+        setWx(_wxCache.data);
+        // Background refresh if stale and auto-refresh is on
+        const maxAge = wsCfg.auto_refresh==='3h' ? 10800000 : wsCfg.auto_refresh==='hourly' ? 3600000 : 0;
+        if (maxAge>0 && Date.now()-(_wxCache.ts||0) > maxAge) {
+          fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name).then(d=>{
+            _wxCache = {data:d, locId:wloc.id, ts:Date.now()};
+            setWx(d);
+          });
+        }
+      } else if (wsCfg.auto_refresh !== 'manual') {
+        // Auto-fetch on first load
+        setWxFetching(true);
+        fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name).then(d=>{
+          _wxCache = {data:d, locId:wloc.id, ts:Date.now()};
+          setWx(d); setWxFetching(false);
+        });
+      }
+      // If manual: show empty card with Fetch button
+    }
   };
   useEffect(()=>{ load(); },[]);
+
+  const refreshWeather = async () => {
+    const wloc = _wxLocation;
+    const wsCfg = _wxSettings || DEFAULT_WEATHER_SETTINGS;
+    if (!wloc) return;
+    setWxFetching(true);
+    const d = await fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name);
+    _wxCache = { data:d, locId:wloc.id, ts:Date.now() };
+    setWx(d); setWxFetching(false);
+    // Log to helm_logs for System Health tracking
+    const {data:{user:u}} = await supabase.auth.getUser();
+    if (u) supabase.from('helm_logs').insert({
+      user_id:u.id, function_name:'weather', action:'fetch',
+      status: d.error ? 'error' : 'success',
+      meta:{ location: wloc.name, lat: wloc.latitude, lng: wloc.longitude },
+      error_code: d.error ? 'weather_fetch_failed' : null,
+      error_detail: d.error || null,
+    }).then(()=>{}).catch(()=>{});
+  };
 
   // Explicit Helm calls only — on button press
   const runPlanMyDay = async () => {
@@ -3841,6 +4276,9 @@ function DashboardPage({ user, onNavigate }) {
       ) : null}
 
       {/* Helm Brief card */}
+      <WeatherCard wx={wx} ws={_wxSettings||DEFAULT_WEATHER_SETTINGS} location={_wxLocation} onRefresh={refreshWeather} fetching={wxFetching}/>
+
+      {/* Helm Brief */}
       <div className="card" style={{marginBottom:18,border:'1px solid var(--border)'}}>
         <div className="row-between" style={{marginBottom:8}}>
           <div className="section-title" style={{margin:0}}>🧭 {ASSISTANT_NAME} Brief</div>
