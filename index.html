@@ -305,8 +305,8 @@ function calcOutdoorRisk(wx, ws) {
   check(wx.wind,  mphToUnit(s.wind_watch_mph,unit), mphToUnit(s.wind_caution_mph,unit), mphToUnit(s.wind_avoid_mph,unit),  'Wind',  unit);
   check(wx.gusts, mphToUnit(s.gust_watch_mph,unit), mphToUnit(s.gust_caution_mph,unit), mphToUnit(s.gust_avoid_mph,unit),  'Gusts', unit);
 
-  // Rain (max of current and daily peak)
-  const rain = Math.max(wx.rain_prob||0, wx.rain_prob_max||0);
+  // Rain: use daily max, not current slot (current slot can spike during convective heatwave periods)
+  const rain = wx.rain_prob_max || wx.rain_prob || 0;
   check(rain, s.rain_watch_pct, s.rain_caution_pct, s.rain_avoid_pct, 'Rain', '%');
 
   // UV
@@ -4033,9 +4033,17 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
   const fmtTemp = c => c!=null ? (isFahr ? `${Math.round(c*9/5+32)}°F` : `${Math.round(c)}°C`) : '—';
   const sunriseT = wx.sunrise?.split('T')[1]?.slice(0,5);
   const sunsetT  = wx.sunset?.split('T')[1]?.slice(0,5);
-  const rainProb = Math.max(wx.rain_prob||0, wx.rain_prob_max||0);
+  // Use daily max for rain — clearer for planning ("could it rain today?")
+  // Current slot precipitation_probability can be misleadingly high during convective heatwave periods
+  const rainProbMax = wx.rain_prob_max || 0;
+  const rainProbNow = wx.rain_prob || 0;
   const isCompact = ws.compact_card;
   const watersports = ws.act_watersports || ws.act_sailing;
+  // Use daily WMO code for headline condition (most representative of the day)
+  // Fall back to current code if daily not available
+  const headlineLabel = wmoLabel(wx.daily_code || wx.weather_code);
+  const currentLabel  = (wx.weather_code && wx.weather_code !== wx.daily_code)
+    ? wmoLabel(wx.weather_code) : null;
 
   return (
     <div className="card" style={{marginBottom:14}}>
@@ -4055,8 +4063,9 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
       <div className="row" style={{gap:10,marginBottom:8,alignItems:'flex-end'}}>
         <div style={{fontSize:30,fontWeight:700,lineHeight:1}}>{fmtTemp(wx.temp)}</div>
         <div>
-          <div style={{fontSize:12,lineHeight:1.3}}>{wmoLabel(wx.weather_code||wx.daily_code)}</div>
-          <div className="meta">{fmtTemp(wx.temp_min)} – {fmtTemp(wx.temp_max)}</div>
+          <div style={{fontSize:12,lineHeight:1.3}}>{headlineLabel}</div>
+          {currentLabel && <div className="meta" style={{fontSize:10}}>Now: {currentLabel}</div>}
+          <div className="meta">{fmtTemp(wx.temp_min)} – {fmtTemp(wx.temp_max)} today</div>
         </div>
       </div>
 
@@ -4064,16 +4073,16 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
         {wx.wind!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
           <div style={{fontSize:13,fontWeight:600}}>{Math.round(wx.wind)} {unit}</div>
-          <div style={{fontSize:10,color:'var(--muted)'}}>Wind</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Wind now</div>
         </div>}
         {wx.gusts!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
           <div style={{fontSize:13,fontWeight:600}}>{Math.round(wx.gusts)} {unit}</div>
-          <div style={{fontSize:10,color:'var(--muted)'}}>Gusts</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Gusts now</div>
         </div>}
-        {rainProb!=null && <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
-          <div style={{fontSize:13,fontWeight:600}}>{rainProb}%</div>
-          <div style={{fontSize:10,color:'var(--muted)'}}>Rain</div>
-        </div>}
+        <div className="card-sm" style={{background:'var(--surface2)',textAlign:'center',padding:'6px 4px'}}>
+          <div style={{fontSize:13,fontWeight:600}}>{rainProbMax}%</div>
+          <div style={{fontSize:10,color:'var(--muted)'}}>Rain max today</div>
+        </div>
       </div>
 
       {/* Extra detail (non-compact) */}
