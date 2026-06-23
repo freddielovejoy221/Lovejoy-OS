@@ -3989,7 +3989,10 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
         <div style={{fontSize:13,fontWeight:600}}>🌤 Weather</div>
         <button className="btn btn-ghost btn-sm" onClick={onRefresh}>↻ Retry</button>
       </div>
-      <div className="meta" style={{color:'var(--red)'}}>Unable to fetch: {wx.error}</div>
+      <div className="meta" style={{color:'var(--red)',marginBottom:2}}>Error: {wx.error}</div>
+      {wx.detail && <div style={{fontSize:10,color:'var(--red)',fontFamily:'monospace',wordBreak:'break-all',marginBottom:4}}>{String(wx.detail).slice(0,300)}</div>}
+      {wx.message && <div className="meta" style={{color:'var(--amber)'}}>{wx.message}</div>}
+      <div className="meta" style={{marginTop:4}}>Check More → Debug Log or Supabase → Edge Functions → weather → Logs for details.</div>
     </div>
   );
 
