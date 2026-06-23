@@ -174,6 +174,7 @@ const isDueSoon = d => { const n = daysUntil(d); return n !== null && n >= 0 && 
 
 // ── GOOGLE CALENDAR ───────────────────────────────────────────
 const CALENDAR_FN_URL = SUPABASE_URL + '/functions/v1/calendar';
+const WEATHER_FN_URL  = SUPABASE_URL + '/functions/v1/weather';
 // Helm's backend endpoint. The deployed Edge Function keeps the name
 // 'ai-chief-of-staff' (renaming it would require redeploying), but
 // everything in the app refers to the assistant as Helm.
@@ -212,77 +213,43 @@ let _wxLocation = null;  // latest loaded weather_locations default row
 const mphToUnit = (mph, unit) =>
   unit==='knots' ? mph*0.869 : unit==='kmh' ? mph*1.609 : mph;
 
-// WMO weather code → human label
+// Met Office significant weather codes (0–30 scale, used by the weather Edge Function)
 const WMO_LABEL = {
-  0:'☀️ Clear sky', 1:'🌤 Mainly clear', 2:'⛅ Partly cloudy', 3:'☁️ Overcast',
-  45:'🌫 Fog', 48:'🌫 Icy fog',
-  51:'🌦 Light drizzle', 53:'🌦 Drizzle', 55:'🌧 Heavy drizzle',
-  61:'🌧 Light rain', 63:'🌧 Moderate rain', 65:'🌧 Heavy rain',
-  71:'🌨 Light snow', 73:'🌨 Snow', 75:'❄️ Heavy snow', 77:'❄️ Snow grains',
-  80:'🌦 Light showers', 81:'🌧 Showers', 82:'🌧 Heavy showers',
-  85:'🌨 Snow showers', 86:'❄️ Heavy snow showers',
-  95:'⛈ Thunderstorm', 96:'⛈ Thunderstorm + hail', 99:'⛈ Thunderstorm + heavy hail',
+  0:'🌙 Clear night',    1:'☀️ Sunny',           2:'⛅ Partly cloudy',
+  3:'⛅ Partly cloudy',  5:'🌫 Mist',            6:'🌫 Fog',
+  7:'☁️ Cloudy',         8:'☁️ Overcast',
+  9:'🌦 Light shower',  10:'🌦 Light shower',   11:'🌧 Drizzle',
+  12:'🌧 Light rain',   13:'🌧 Heavy shower',   14:'🌧 Heavy shower',
+  15:'🌧 Heavy rain',   16:'🌨 Sleet shower',   17:'🌨 Sleet shower',
+  18:'🌨 Sleet',        19:'🌩 Hail shower',    20:'🌩 Hail shower',
+  21:'🌩 Hail',         22:'🌨 Light snow',     23:'🌨 Light snow shower',
+  24:'❄️ Light snow',   25:'❄️ Heavy snow shower', 26:'❄️ Heavy snow shower',
+  27:'❄️ Heavy snow',   28:'⛈ Thunder shower', 29:'⛈ Thunder shower',
+  30:'⛈ Thunder',
 };
 const wmoLabel = code => WMO_LABEL[code] || '🌤 Conditions';
 
-// ── FETCH WEATHER (Open-Meteo, no API key needed) ─────────────
+// ── FETCH WEATHER via Edge Function (Met Office DataHub) ──────
+// API key stays in Supabase secrets — never in the browser.
 async function fetchWeather(lat, lng, ws, locName) {
-  // Map our wind_unit to Open-Meteo's parameter
-  const apiWind = ws?.wind_unit === 'knots' ? 'kn' : ws?.wind_unit === 'kmh' ? 'kmh' : 'mph';
-  const weatherUrl = [
-    'https://api.open-meteo.com/v1/forecast',
-    `?latitude=${lat}&longitude=${lng}`,
-    '&current=temperature_2m,precipitation_probability,rain,wind_speed_10m,wind_gusts_10m,weather_code,uv_index',
-    '&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset',
-    ',precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max',
-    '&forecast_days=1&timezone=Europe%2FLondon',
-    `&wind_speed_unit=${apiWind}`,
-  ].join('');
-
-  const pollenUrl = [
-    'https://air-quality-api.open-meteo.com/v1/air-quality',
-    `?latitude=${lat}&longitude=${lng}`,
-    '&hourly=grass_pollen&forecast_days=1&timezone=Europe%2FLondon',
-  ].join('');
-
+  const {data:{session}} = await supabase.auth.getSession();
+  if (!session) return {error:'Not signed in', fetched_at:new Date().toISOString()};
   try {
-    const [wRes, pRes] = await Promise.all([
-      fetch(weatherUrl),
-      fetch(pollenUrl).catch(()=>null),
-    ]);
-    if (!wRes.ok) return { error:`Weather API error ${wRes.status}`, fetched_at:new Date().toISOString() };
-    const w = await wRes.json();
-
-    let grassPollen = null;
-    if (pRes?.ok) {
-      const p = await pRes.json().catch(()=>({}));
-      const vals = (p.hourly?.grass_pollen||[]).filter(v=>v!=null&&v>=0);
-      if (vals.length) grassPollen = Math.max(...vals);
-    }
-
-    return {
-      temp:          w.current?.temperature_2m,
-      rain_prob:     w.current?.precipitation_probability,
-      wind:          w.current?.wind_speed_10m,
-      gusts:         w.current?.wind_gusts_10m,
-      weather_code:  w.current?.weather_code,
-      uv:            w.current?.uv_index,
-      temp_max:      w.daily?.temperature_2m_max?.[0],
-      temp_min:      w.daily?.temperature_2m_min?.[0],
-      sunrise:       w.daily?.sunrise?.[0],
-      sunset:        w.daily?.sunset?.[0],
-      rain_prob_max: w.daily?.precipitation_probability_max?.[0],
-      wind_max:      w.daily?.wind_speed_10m_max?.[0],
-      gusts_max:     w.daily?.wind_gusts_10m_max?.[0],
-      uv_max:        w.daily?.uv_index_max?.[0],
-      daily_code:    w.daily?.weather_code?.[0],
-      grass_pollen:  grassPollen,
-      wind_unit:     ws?.wind_unit || 'mph',
-      location_name: locName || null,
-      fetched_at:    new Date().toISOString(),
-    };
+    const res = await fetch(WEATHER_FN_URL, {
+      method:'POST',
+      headers:{
+        'Authorization':`Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY,
+        'Content-Type':'application/json',
+      },
+      body: JSON.stringify({ lat, lng, wind_unit: ws?.wind_unit||'mph' }),
+    });
+    const data = await res.json();
+    if (data.error) return {...data, fetched_at: data.fetched_at||new Date().toISOString()};
+    // Override location_name with the user's saved name if provided
+    return {...data, location_name: locName||data.location_name};
   } catch(err) {
-    return { error: String(err), fetched_at: new Date().toISOString() };
+    return {error: String(err), fetched_at: new Date().toISOString()};
   }
 }
 
@@ -312,11 +279,12 @@ function calcOutdoorRisk(wx, ws) {
   // UV
   if (s.show_uv !== false) check(wx.uv_max||wx.uv, s.uv_watch, s.uv_caution, s.uv_avoid, 'UV', '');
 
-  // Thunderstorm (WMO codes 95/96/99)
+  // Thunderstorm: Met Office codes 28-30 OR has_thunder flag from Edge Function
+  // WMO codes 95-99 kept as fallback for any legacy cached data
   if (s.thunder_show !== false) {
-    const code = wx.weather_code || wx.daily_code || 0;
-    if ([95,96,99].includes(code)) triggers.push({level:'avoid',  reason:'Thunderstorm', value:null, unit:''});
-    else if ([91,92].includes(code)) triggers.push({level:'caution',reason:'Thunderstorm', value:null, unit:''});
+    const moThunder  = wx.has_thunder || [28,29,30].includes(wx.weather_code) || [28,29,30].includes(wx.daily_code);
+    const wmoThunder = [95,96,99].includes(wx.weather_code) || [95,96,99].includes(wx.daily_code);
+    if (moThunder || wmoThunder) triggers.push({level:'avoid', reason:'Thunderstorm', value:null, unit:''});
   }
 
   // Pollen (hayfever activity must be on)
@@ -2729,19 +2697,19 @@ const SYSTEM_REGISTRY = [
   // ── WEATHER ───────────────────────────────────────────────────
   {
     id:'weather', name:'Weather & Outdoor Risk', category:'Monitoring',
-    required:false, usesSecrets:false, accessType:'read-only',
-    description:'Open-Meteo weather (no API key required) + Copernicus pollen data. Called directly from the browser. Provides wind, rain, UV, thunderstorm risk and grass pollen.',
+    required:false, usesSecrets:true, accessType:'read-only',
+    description:'Met Office DataHub Site Specific API (UK model, via Edge Function). Grass pollen from Copernicus CAMS via Open-Meteo (no key). METOFFICE_API_KEY stored in Supabase secrets only.',
     settingsPage:'weathersettings', plannedOnly:false,
     getStatus:(h,flags)=>{
       if (flags && !flags.show_weather_card) return { status:'Disabled', detail:'Weather card disabled in settings.' };
       const lastFetch = h.logs?.find(l=>l.function_name==='weather'&&l.action==='fetch'&&l.status==='success');
       const lastErr   = h.logs?.find(l=>l.function_name==='weather'&&l.action==='fetch'&&l.status==='error');
       if (lastFetch) return {
-        status:'Working', detail:`Last fetch ${relTime(lastFetch.created_at)} · ${_wxSettings?.include_in_helm?'Included in Helm':'Not included in Helm'}`,
+        status:'Working', detail:`Met Office · Last fetch ${relTime(lastFetch.created_at)} · ${_wxSettings?.include_in_helm?'Included in Helm':'Not in Helm'}`,
         lastSuccess: lastFetch.created_at,
       };
-      if (lastErr) return { status:'Failed', detail:`Last error: ${lastErr.error_code}`, lastError: lastErr.error_detail };
-      return { status:'Not configured', detail:'Weather not yet fetched. Open dashboard and tap Fetch.' };
+      if (lastErr) return { status:'Failed', detail:`Error: ${lastErr.error_code}`, lastError: lastErr.error_detail };
+      return { status:'Not configured', detail:'No fetches yet. Open dashboard and tap Fetch.' };
     },
   },
   {
@@ -4031,19 +3999,15 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
   const unit    = ws.wind_unit || 'mph';
   const isFahr  = ws.temp_unit === 'fahrenheit';
   const fmtTemp = c => c!=null ? (isFahr ? `${Math.round(c*9/5+32)}°F` : `${Math.round(c)}°C`) : '—';
-  const sunriseT = wx.sunrise?.split('T')[1]?.slice(0,5);
-  const sunsetT  = wx.sunset?.split('T')[1]?.slice(0,5);
-  // Use daily max for rain — clearer for planning ("could it rain today?")
-  // Current slot precipitation_probability can be misleadingly high during convective heatwave periods
+  // Sunrise/sunset: Edge Function returns pre-formatted "HH:MM" (London time, BST-correct)
+  const sunriseT = wx.sunrise || null;
+  const sunsetT  = wx.sunset  || null;
   const rainProbMax = wx.rain_prob_max || 0;
-  const rainProbNow = wx.rain_prob || 0;
-  const isCompact = ws.compact_card;
+  const isCompact   = ws.compact_card;
   const watersports = ws.act_watersports || ws.act_sailing;
-  // Use daily WMO code for headline condition (most representative of the day)
-  // Fall back to current code if daily not available
-  const headlineLabel = wmoLabel(wx.daily_code || wx.weather_code);
-  const currentLabel  = (wx.weather_code && wx.weather_code !== wx.daily_code)
-    ? wmoLabel(wx.weather_code) : null;
+  // Use Edge Function's pre-computed Met Office labels; fallback to wmoLabel for legacy cache
+  const headlineLabel = wx.condition_label || wmoLabel(wx.daily_code || wx.weather_code);
+  const currentLabel  = (wx.current_label && wx.current_label !== wx.condition_label) ? wx.current_label : null;
 
   return (
     <div className="card" style={{marginBottom:14}}>
