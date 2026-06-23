@@ -1533,6 +1533,275 @@ function ReviewsPage() {
   );
 }
 
+// ── ROADMAP QUEUE ─────────────────────────────────────────────
+// Shows only items with a lane (queue items). Feature Log items
+// (live/experimental with no lane) stay in the Features Guide.
+function RoadmapQueuePage() {
+  const [items,   setItems]    = useState([]);
+  const [loading, setLoading]  = useState(true);
+  const [filter,  setFilter]   = useState('all');
+  const [expanded,setExpanded] = useState(new Set());
+  const [formItem,setFormItem] = useState(null); // null=list, {}=new, {...}=edit
+  const [saving,  setSaving]   = useState(false);
+
+  const LANES = ['now','next','later','parked'];
+  const LANE_CFG = {
+    now:    {label:'Now',    colour:'var(--red)',    desc:'Active / doing next'},
+    next:   {label:'Next',   colour:'var(--amber)',  desc:'Committed for upcoming builds'},
+    later:  {label:'Later',  colour:'var(--accent)', desc:'Good idea, not yet scheduled'},
+    parked: {label:'Parked', colour:'var(--muted)',  desc:'Not pursuing right now'},
+  };
+  const AREAS = ['helm','calendar','dashboard','health','finance','work','integrations','reliability','settings','other'];
+  const AREA_ICON = {helm:'🧭',calendar:'📅',dashboard:'🏠',health:'💪',finance:'💰',work:'💼',integrations:'🔗',reliability:'🛡️',settings:'⚙️',other:'📦'};
+  const S_COL = {idea:'var(--muted)',queued:'var(--amber)',approved:'var(--green)',in_progress:'var(--accent)',parked:'var(--muted)',rejected:'var(--red)',live:'var(--green)',experimental:'var(--amber)'};
+  const S_LBL = {idea:'Idea',queued:'Queued',approved:'Approved',in_progress:'In Progress',parked:'Parked',rejected:'Rejected',live:'Built',experimental:'Built',planned:'Planned',someday:'Someday'};
+
+  const load = async () => {
+    setLoading(true);
+    const {data} = await supabase.from('roadmap').select('*').not('lane','is',null).order('sort_order').order('created_at');
+    setItems(data||[]);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const toggle = id => setExpanded(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
+
+  const moveLane = async (id, lane) => {
+    await supabase.from('roadmap').update({lane, updated_at:new Date().toISOString()}).eq('id',id);
+    setItems(p=>p.map(i=>i.id===id?{...i,lane}:i));
+    setExpanded(p=>{ const n=new Set(p); n.delete(id); return n; });
+  };
+
+  const markBuilt = async id => {
+    await supabase.from('roadmap').update({status:'live',lane:null,updated_at:new Date().toISOString()}).eq('id',id);
+    setItems(p=>p.filter(i=>i.id!==id));
+    setExpanded(p=>{ const n=new Set(p); n.delete(id); return n; });
+  };
+
+  const markRejected = async id => {
+    await supabase.from('roadmap').update({status:'rejected',updated_at:new Date().toISOString()}).eq('id',id);
+    setItems(p=>p.map(i=>i.id===id?{...i,status:'rejected'}:i));
+  };
+
+  const saveForm = async () => {
+    if (!formItem.name?.trim()) return;
+    setSaving(true);
+    const payload = {
+      name: formItem.name.trim(),
+      description: formItem.description||null,
+      problem: formItem.problem||null,
+      notes: formItem.notes||null,
+      decision_note: formItem.decision_note||null,
+      dependencies: formItem.dependencies||null,
+      expected_value: formItem.expected_value||null,
+      effort: formItem.effort||null,
+      risk: formItem.risk||null,
+      lane: formItem.lane||'next',
+      status: formItem.status||'idea',
+      system_area: formItem.system_area||'other',
+      feature_type: formItem.feature_type||'core',
+      updated_at: new Date().toISOString(),
+    };
+    if (formItem.id) {
+      await supabase.from('roadmap').update(payload).eq('id',formItem.id);
+    } else {
+      await supabase.from('roadmap').insert({...payload, created_at:new Date().toISOString()});
+    }
+    await load();
+    setSaving(false); setFormItem(null);
+  };
+
+  const filteredItems = items.filter(i=>{
+    if (filter==='all') return true;
+    if (filter==='in_progress') return i.status==='in_progress';
+    if (filter==='high_value') return (i.expected_value||'').toLowerCase().includes('high');
+    if (filter==='high_risk') return (i.risk||'').toLowerCase()==='high';
+    return i.lane===filter;
+  });
+  const grouped = LANES.reduce((a,l)=>({...a,[l]:items.filter(i=>i.lane===l)}),{});
+
+  const valC    = v => v?.toLowerCase().includes('high')?'var(--green)':v?.toLowerCase()==='medium'?'var(--amber)':'var(--muted)';
+  const effortC = v => v?.toLowerCase()==='high'?'var(--amber)':'var(--muted)';
+  const riskC   = v => v?.toLowerCase()==='high'?'var(--red)':v?.toLowerCase()==='medium'?'var(--amber)':'var(--green)';
+
+  // ── item card ─────────────────────────────────────────────
+  const renderItem = item => {
+    const isExp = expanded.has(item.id);
+    const lc = LANE_CFG[item.lane]||LANE_CFG.parked;
+    return (
+      <div key={item.id} className="card" style={{marginBottom:10,borderLeft:`3px solid ${lc.colour}`}}>
+        <div className="row-between" style={{cursor:'pointer'}} onClick={()=>toggle(item.id)}>
+          <div style={{flex:1,minWidth:0,paddingRight:8}}>
+            <div style={{fontSize:14,fontWeight:600,lineHeight:1.3,marginBottom:5}}>{item.name}</div>
+            <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+              {item.system_area && <span style={{fontSize:10,color:'var(--accent2)'}}>{AREA_ICON[item.system_area]} {item.system_area}</span>}
+              <span style={{fontSize:10,fontWeight:600,color:S_COL[item.status]||'var(--muted)'}}>{S_LBL[item.status]||item.status}</span>
+              {item.expected_value && <span style={{fontSize:10,color:valC(item.expected_value)}}>↑ {item.expected_value}</span>}
+              {item.effort && <span style={{fontSize:10,color:effortC(item.effort)}}>⚙ {item.effort}</span>}
+              {item.risk && <span style={{fontSize:10,color:riskC(item.risk)}}>⚡ {item.risk}</span>}
+            </div>
+          </div>
+          <span style={{color:'var(--muted)',fontSize:11,flexShrink:0}}>{isExp?'▲':'▼'}</span>
+        </div>
+
+        {isExp && (
+          <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+            {item.description && <div style={{fontSize:13,lineHeight:1.6,marginBottom:10}}>{item.description}</div>}
+            {item.problem && (
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:10,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>Problem</div>
+                <div className="meta" style={{lineHeight:1.5}}>{item.problem}</div>
+              </div>
+            )}
+            {item.decision_note && (
+              <div style={{marginBottom:10,background:'rgba(79,124,255,0.06)',border:'1px solid rgba(79,124,255,0.15)',borderRadius:6,padding:'8px 10px'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'var(--accent)',textTransform:'uppercase',marginBottom:3}}>Decision note</div>
+                <div className="meta" style={{lineHeight:1.5}}>{item.decision_note}</div>
+              </div>
+            )}
+            {item.notes && <div className="meta" style={{marginBottom:10,lineHeight:1.5}}>{item.notes}</div>}
+            {item.dependencies && <div className="meta" style={{marginBottom:10}}><strong style={{color:'var(--text)'}}>Dependencies:</strong> {item.dependencies}</div>}
+
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:10,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',marginBottom:6}}>Move to lane</div>
+              <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+                {LANES.filter(l=>l!==item.lane).map(l=>(
+                  <button key={l} className="btn btn-ghost btn-sm" style={{fontSize:11,color:LANE_CFG[l].colour,padding:'4px 10px'}}
+                    onClick={e=>{e.stopPropagation();moveLane(item.id,l);}}>
+                    {LANE_CFG[l].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+              <button className="btn btn-ghost btn-sm" onClick={e=>{e.stopPropagation();setFormItem({...item});}}>Edit</button>
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--green)'}}
+                onClick={e=>{e.stopPropagation();markBuilt(item.id);}}>✓ Mark built</button>
+              {item.status!=='rejected' && (
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--red)',marginLeft:'auto'}}
+                  onClick={e=>{e.stopPropagation();markRejected(item.id);}}>Reject</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── form view ─────────────────────────────────────────────
+  if (formItem !== null) {
+    const isNew = !formItem.id;
+    const F = ({label,children}) => <div className="field">{label&&<label className="label">{label}</label>}{children}</div>;
+    const sel = (key,opts,placeholder='—') => (
+      <select className="input" value={formItem[key]||''} onChange={e=>setFormItem(p=>({...p,[key]:e.target.value}))}>
+        {placeholder&&<option value="">{placeholder}</option>}
+        {opts.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+      </select>
+    );
+    return (
+      <div className="page">
+        <div className="row-between" style={{marginBottom:16}}>
+          <h1 style={{fontSize:18,fontWeight:700}}>{isNew?'Add Idea':'Edit Item'}</h1>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setFormItem(null)}>✕ Cancel</button>
+        </div>
+        <F label="Title *">
+          <input className="input" value={formItem.name||''} onChange={e=>setFormItem(p=>({...p,name:e.target.value}))} placeholder="What are we building or exploring?"/>
+        </F>
+        <F label="Description">
+          <textarea className="input" rows={2} value={formItem.description||''} onChange={e=>setFormItem(p=>({...p,description:e.target.value}))} placeholder="Brief description"/>
+        </F>
+        <F label="Problem it solves">
+          <textarea className="input" rows={2} value={formItem.problem||''} onChange={e=>setFormItem(p=>({...p,problem:e.target.value}))} placeholder="What problem does this address?"/>
+        </F>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:4}}>
+          <F label="Lane">{sel('lane',LANES.map(l=>[l,LANE_CFG[l].label]),null)}</F>
+          <F label="Status">{sel('status',[['idea','Idea'],['queued','Queued'],['approved','Approved'],['in_progress','In Progress'],['parked','Parked'],['rejected','Rejected']],null)}</F>
+          <F label="Expected value">{sel('expected_value',[['high','High'],['medium','Medium'],['low','Low']])}</F>
+          <F label="Effort">{sel('effort',[['low','Low'],['medium','Medium'],['high','High']])}</F>
+          <F label="Risk">{sel('risk',[['low','Low'],['medium','Medium'],['high','High']])}</F>
+          <F label="System area">{sel('system_area',AREAS.map(a=>[a,`${AREA_ICON[a]} ${a}`]))}</F>
+        </div>
+        <F label="Decision note">
+          <textarea className="input" rows={2} value={formItem.decision_note||''} onChange={e=>setFormItem(p=>({...p,decision_note:e.target.value}))} placeholder="Why building, waiting, parking or rejecting?"/>
+        </F>
+        <F label="Dependencies">
+          <input className="input" value={formItem.dependencies||''} onChange={e=>setFormItem(p=>({...p,dependencies:e.target.value}))} placeholder="e.g. Requires Google Maps API"/>
+        </F>
+        <F label="Notes">
+          <textarea className="input" rows={2} value={formItem.notes||''} onChange={e=>setFormItem(p=>({...p,notes:e.target.value}))} placeholder="Any extra context"/>
+        </F>
+        <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',marginTop:4}}
+          onClick={saveForm} disabled={saving||!formItem.name?.trim()}>
+          {saving?'Saving…':isNew?'Add to Roadmap':'Save Changes'}
+        </button>
+        {!isNew && (
+          <div className="row" style={{gap:8,marginTop:12,justifyContent:'center'}}>
+            <button className="btn btn-ghost btn-sm" style={{color:'var(--green)'}} onClick={()=>{markBuilt(formItem.id);setFormItem(null);}}>Mark Built</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{moveLane(formItem.id,'parked');setFormItem(null);}}>Park</button>
+            <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={()=>{markRejected(formItem.id);setFormItem(null);}}>Reject</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (loading) return <div className="page"><div className="spinner"/></div>;
+
+  const active = items.filter(i=>i.lane!=='parked').length;
+
+  // ── main list view ────────────────────────────────────────
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:4}}>
+        <h1 style={{fontSize:20,fontWeight:700}}>Roadmap Queue</h1>
+        <button className="btn btn-primary btn-sm" onClick={()=>setFormItem({lane:'next',status:'idea'})}>+ Idea</button>
+      </div>
+      <div className="meta" style={{marginBottom:14}}>
+        {active} active · {grouped.now?.length||0} now · {grouped.next?.length||0} next · {grouped.parked?.length||0} parked
+      </div>
+
+      {/* Filter chips */}
+      <div style={{display:'flex',gap:6,overflowX:'auto',paddingBottom:8,marginBottom:14,WebkitOverflowScrolling:'touch'}}>
+        {[
+          {k:'all',l:'All'},{k:'now',l:'🔴 Now'},{k:'next',l:'🟡 Next'},
+          {k:'later',l:'🔵 Later'},{k:'parked',l:'⚫ Parked'},
+          {k:'in_progress',l:'In Progress'},{k:'high_value',l:'High Value'},{k:'high_risk',l:'High Risk'},
+        ].map(f=>(
+          <button key={f.k} className={`btn btn-sm ${filter===f.k?'btn-primary':'btn-ghost'}`}
+            style={{flexShrink:0,whiteSpace:'nowrap'}} onClick={()=>setFilter(f.k)}>{f.l}</button>
+        ))}
+      </div>
+
+      {/* Filtered flat list */}
+      {filter !== 'all' && (
+        filteredItems.length === 0
+          ? <div className="empty"><div className="empty-icon">📭</div>No items match this filter.</div>
+          : filteredItems.map(item => renderItem(item))
+      )}
+
+      {/* Grouped by lane (default view) */}
+      {filter === 'all' && LANES.map(lane=>{
+        const laneItems = grouped[lane]||[];
+        const cfg = LANE_CFG[lane];
+        return (
+          <div key={lane} style={{marginBottom:20}}>
+            <div className="row" style={{gap:8,marginBottom:8,alignItems:'center'}}>
+              <div style={{fontSize:11,fontWeight:700,color:cfg.colour,textTransform:'uppercase',letterSpacing:'0.08em'}}>{cfg.label}</div>
+              <span className="pill pill-muted" style={{fontSize:10}}>{laneItems.length}</span>
+              <div className="meta" style={{fontSize:11}}>{cfg.desc}</div>
+            </div>
+            {laneItems.length===0
+              ? <div className="card-sm" style={{color:'var(--muted)',fontSize:12,fontStyle:'italic'}}>No items in this lane.</div>
+              : laneItems.map(item=>renderItem(item))
+            }
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── FEATURES WIKI (data-driven from roadmap table) ────────────
 function FeaturesWikiPage() {
   const [features, setFeatures] = useState([]);
@@ -3362,6 +3631,7 @@ function App() {
     { id:'areas',        label:'Areas & Roles',            icon:'layers' },
     { id:'decisions',    label:'Decisions & Assets',       icon:'box' },
     { id:'reviews',      label:'Weekly Review',            icon:'clock' },
+    { id:'roadmap',      label:'Roadmap Queue',            icon:'alert' },
     { id:'systemhealth', label:'System Health',            icon:'alert' },
     { id:'features',     label:'Features Guide',           icon:'alert' },
     { id:'debug',        label:'Debug Log',                icon:'alert' },
@@ -3378,6 +3648,7 @@ function App() {
     if (page==='areas')        return <AreasPage/>;
     if (page==='decisions')    return <DecisionsAssetsPage/>;
     if (page==='reviews')      return <ReviewsPage/>;
+    if (page==='roadmap')      return <RoadmapQueuePage/>;
     if (page==='systemhealth') return <SystemHealthPage onNavigate={setPage}/>;
     if (page==='features')     return <FeaturesWikiPage/>;
     if (page==='debug')        return <DebugPage/>;
@@ -3410,7 +3681,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -3419,7 +3690,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','calendar','projects','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
