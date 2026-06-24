@@ -2399,6 +2399,143 @@ function RoadmapQueuePage() {
 }
 
 // ── FEATURES WIKI (data-driven from roadmap table) ────────────
+// ── SECURITY & PRIVACY PAGE ──────────────────────────────────
+function SecurityPage() {
+  const REVIEW_DATE = 'June 2026';
+  const findings = [
+    {
+      risk:'HIGH', title:'Sign-ups may be enabled in Supabase Auth',
+      detail:'Core data tables (tasks, projects, decisions, etc.) have no user_id column. Any signed-up user can access all rows. PRIMARY FIX: Supabase Dashboard → Authentication → Settings → disable "Enable sign-ups".',
+      action:'Manual: Supabase → Auth → Settings → disable sign-ups',
+      done: false,
+    },
+    {
+      risk:'HIGH', title:'Run 15_security_rls_fix.sql',
+      detail:'Confirms/tightens user-scoped RLS policies on all tables that have a user_id column (helm_settings, billing, flags, weather, travel tables).',
+      action:'Manual: Supabase → SQL Editor → run 15_security_rls_fix.sql',
+      done: false,
+    },
+    {
+      risk:'MEDIUM', title:'Google Calendar disconnect not available in-app',
+      detail:'To revoke calendar access, go to myaccount.google.com → Security → Third-party apps. Future sprint: add disconnect button here.',
+      action:'Future: add disconnect button',
+      done: false,
+    },
+    {
+      risk:'LOW', title:'No session timeout enforcement',
+      detail:'Supabase sessions expire per Supabase config. No in-app forced timeout. Reduce session lifetime in Supabase Auth settings if desired.',
+      action:'Optional: Supabase → Auth → Session lifetime',
+      done: false,
+    },
+    {
+      risk:'LOW', title:'Helm prompts contain personal context',
+      detail:'reviews.prompt_used stores full planning context. Protected by RLS. No tokens or secrets in prompts. Acceptable for personal app.',
+      action:'Future: add Helm history purge option',
+      done: false,
+    },
+  ];
+
+  const rlsStatus = [
+    {table:'Core tables (tasks, projects, etc.)', rls:'✓', scoped:'✗ No user_id', risk:'HIGH'},
+    {table:'helm_settings, billing, flags', rls:'✓', scoped:'✓ auth.uid()', risk:'Low'},
+    {table:'helm_logs, proposed_actions', rls:'✓', scoped:'✓ auth.uid()', risk:'Low'},
+    {table:'google_credentials', rls:'✓', scoped:'✓ service-role write only', risk:'Low'},
+    {table:'weather_locations, weather_settings', rls:'✓', scoped:'✓ auth.uid()', risk:'Low'},
+    {table:'travel_settings, travel_presets', rls:'✓', scoped:'✓ auth.uid()', risk:'Low'},
+    {table:'roadmap, feature_flags', rls:'✓', scoped:'Any authenticated (system tables)', risk:'Low'},
+  ];
+
+  const secrets = [
+    {item:'ANTHROPIC_API_KEY', location:'Supabase Edge Function secrets only', status:'✓ Safe'},
+    {item:'METOFFICE_API_KEY', location:'Supabase Edge Function secrets only', status:'✓ Safe'},
+    {item:'GOOGLE_CLIENT_SECRET', location:'Supabase Edge Function secrets only', status:'✓ Safe'},
+    {item:'SUPABASE_SERVICE_ROLE_KEY', location:'Edge Function env only', status:'✓ Safe'},
+    {item:'SUPABASE_ANON_KEY', location:'index.html (by design — public)', status:'⚠ Public (normal)'},
+    {item:'Google refresh token', location:'google_credentials table (service-role write)', status:'✓ Safe'},
+  ];
+
+  const highCount = findings.filter(f=>f.risk==='HIGH').length;
+  const overallStatus = highCount > 0 ? {label:'Needs attention', colour:'var(--amber)'} : {label:'Good', colour:'var(--accent)'};
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:18,fontWeight:700,marginBottom:4}}>Security & Privacy</h1>
+      <div className="meta" style={{marginBottom:16}}>Last reviewed: {REVIEW_DATE}</div>
+
+      {/* Overall status */}
+      <div className="card" style={{marginBottom:16,borderLeft:'3px solid ' + overallStatus.colour}}>
+        <div className="row-between">
+          <div style={{fontWeight:600}}>Overall status</div>
+          <div style={{fontWeight:700,color:overallStatus.colour}}>{overallStatus.label}</div>
+        </div>
+        <div className="meta" style={{marginTop:4}}>{highCount} high-risk finding{highCount!==1?'s':''} require manual action · {findings.filter(f=>f.risk==='MEDIUM').length} medium · {findings.filter(f=>f.risk==='LOW').length} low</div>
+      </div>
+
+      {/* Action items */}
+      <div className="section-title">Action items</div>
+      {findings.map((f,i)=>(
+        <div key={i} className="card-sm" style={{marginBottom:8,borderLeft:'3px solid ' + (f.risk==='HIGH'?'var(--red)':f.risk==='MEDIUM'?'var(--amber)':'var(--border)'),padding:'8px 10px'}}>
+          <div className="row-between" style={{marginBottom:2}}>
+            <div style={{fontSize:12,fontWeight:600}}>{f.title}</div>
+            <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,fontWeight:700,
+              color:f.risk==='HIGH'?'#fff':f.risk==='MEDIUM'?'#000':'var(--muted)',
+              background:f.risk==='HIGH'?'var(--red)':f.risk==='MEDIUM'?'var(--amber)':'var(--surface2)'}}>
+              {f.risk}
+            </span>
+          </div>
+          <div className="meta" style={{marginBottom:4}}>{f.detail}</div>
+          <div style={{fontSize:11,color:'var(--accent)'}}>→ {f.action}</div>
+        </div>
+      ))}
+
+      {/* RLS summary */}
+      <div className="section-title" style={{marginTop:16}}>RLS table status</div>
+      {rlsStatus.map((r,i)=>(
+        <div key={i} className="row-between" style={{fontSize:11,padding:'5px 0',borderBottom:'1px solid var(--border)'}}>
+          <span style={{color:'var(--muted)',flex:1}}>{r.table}</span>
+          <span style={{color:r.risk==='HIGH'?'var(--red)':'var(--text)',marginLeft:8}}>{r.scoped}</span>
+        </div>
+      ))}
+
+      {/* Secrets summary */}
+      <div className="section-title" style={{marginTop:16}}>Secrets & token status</div>
+      {secrets.map((s,i)=>(
+        <div key={i} className="row-between" style={{fontSize:11,padding:'5px 0',borderBottom:'1px solid var(--border)'}}>
+          <span style={{color:'var(--muted)',fontFamily:'monospace'}}>{s.item}</span>
+          <span style={{color:s.status.startsWith('✓')?'var(--accent)':'var(--amber)',marginLeft:8}}>{s.status}</span>
+        </div>
+      ))}
+
+      {/* Google Calendar */}
+      <div className="section-title" style={{marginTop:16}}>Google Calendar</div>
+      <div className="card-sm" style={{fontSize:12}}>
+        <div className="meta">Scopes: <code>calendar.readonly</code> + <code>calendar.app.created</code></div>
+        <div className="meta">Writes: dedicated Lovejoy OS calendar only ✓</div>
+        <div className="meta">Existing events: protected — cannot edit or delete ✓</div>
+        <div className="meta">Revoke access: myaccount.google.com → Security → Third-party apps</div>
+      </div>
+
+      {/* Edge Functions */}
+      <div className="section-title" style={{marginTop:16}}>Edge Functions</div>
+      {[['ai-chief-of-staff','Auth required ✓ · User-scoped ✓ · No secrets in logs ✓'],
+        ['calendar','Auth required ✓ · Writes to Helm calendar only ✓ · Tokens not logged ✓'],
+        ['weather','Auth required ✓ · API key server-side only ✓'],
+      ].map(([n,d])=>(
+        <div key={n} className="row-between" style={{fontSize:11,padding:'5px 0',borderBottom:'1px solid var(--border)'}}>
+          <span style={{fontFamily:'monospace',color:'var(--muted)'}}>{n}</span>
+          <span style={{color:'var(--accent)',fontSize:10}}>{d}</span>
+        </div>
+      ))}
+
+      <div style={{marginTop:16,padding:'10px',background:'var(--surface2)',borderRadius:6,fontSize:11}}>
+        <div style={{fontWeight:600,marginBottom:4}}>Full security review</div>
+        <div className="meta">See SECURITY_REVIEW.md and 15_security_rls_fix.sql in the project docs folder.</div>
+        <div className="meta" style={{marginTop:4}}>Next review: September 2026 or before adding Gmail/Health/Finance integrations.</div>
+      </div>
+    </div>
+  );
+}
+
 function FeaturesWikiPage() {
   const [features, setFeatures] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -5152,6 +5289,7 @@ function App() {
     { id:'reviews',        label:'Weekly Review',             icon:'clock' },
     { id:'roadmap',        label:'Roadmap Queue',             icon:'alert' },
     { id:'systemhealth',   label:'System Health',             icon:'alert' },
+    { id:'security',       label:'Security & Privacy',        icon:'alert' },
     { id:'features',       label:'Features Guide',            icon:'alert' },
     { id:'debug',          label:'Debug Log',                 icon:'alert' },
   ];
@@ -5172,6 +5310,7 @@ function App() {
     if (page==='travelsettings') return <TravelSettingsPage/>;
     if (page==='roadmap')        return <RoadmapQueuePage/>;
     if (page==='systemhealth')    return <SystemHealthPage onNavigate={setPage}/>;
+    if (page==='security')        return <SecurityPage/>;
     if (page==='features')        return <FeaturesWikiPage/>;
     if (page==='debug')           return <DebugPage/>;
     if (page==='more') return (
@@ -5203,7 +5342,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='security'?'Security & Privacy':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
