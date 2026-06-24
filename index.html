@@ -4343,22 +4343,31 @@ function TravelPage() {
   const load = async () => {
     setLoading(true);
     const {data:{user}} = await supabase.auth.getUser();
-    const [tsRes, prRes, piRes, ovRes, blkRes, clRes] = await Promise.all([
+    const [tsRes, prRes, piRes] = await Promise.all([
       supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
       supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
       supabase.from('prep_items').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
-      // DB-backed travel state (graceful fail if tables not yet created)
-      supabase.from('travel_event_overrides').select('*').eq('user_id',user.id).catch(()=>({data:[]})),
-      supabase.from('travel_created_blocks').select('*').eq('user_id',user.id).catch(()=>({data:[]})),
-      supabase.from('travel_checklist_items').select('*').eq('user_id',user.id).order('sort_order').catch(()=>({data:[]})),
     ]);
     const cfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
     setTs(cfg); setPresets(prRes.data||[]); setPrepItems(piRes.data||[]);
     setUserId(user.id);
 
-    // Merge Supabase state into localStorage (DB wins per-event)
+    // Travel persistence tables — isolated so missing tables don't block load
+    let ovRows = [], blkRows = [], clRows = [];
+    try {
+      const [ovRes, blkRes, clRes] = await Promise.all([
+        supabase.from('travel_event_overrides').select('*').eq('user_id',user.id),
+        supabase.from('travel_created_blocks').select('*').eq('user_id',user.id),
+        supabase.from('travel_checklist_items').select('*').eq('user_id',user.id).order('sort_order'),
+      ]);
+      ovRows  = ovRes.data  || [];
+      blkRows = blkRes.data || [];
+      clRows  = clRes.data  || [];
+    } catch(e) { /* SQL not yet run — fall back to localStorage */ }
+
+    // Merge DB state into localStorage (DB wins per-event)
     const local = loadTravelState();
-    (ovRes.data||[]).forEach(row => {
+    ovRows.forEach(row => {
       if (row.dismissed) {
         if (!local.dismissed.includes(row.source_event_id)) local.dismissed.push(row.source_event_id);
       } else {
@@ -4369,21 +4378,21 @@ function TravelPage() {
       }
     });
     if (!local.createdBlocks) local.createdBlocks = {};
-    (blkRes.data||[]).forEach(row => {
+    blkRows.forEach(row => {
       local.createdBlocks[row.source_event_id] = {
         ikey:row.travel_idempotency_key, title:row.block_title,
         date:row.block_date, status:row.status, created_at:row.created_at,
       };
     });
     const dbCl = {};
-    (clRes.data||[]).forEach(row => {
+    clRows.forEach(row => {
       if (!dbCl[row.source_event_id]) dbCl[row.source_event_id] = {items:[],custom:[],generated_at:null};
       const item = {id:row.prep_item_id||('c_'+row.id), name:row.name, timing:row.timing, importance:row.importance, done:row.completed};
       if (row.prep_item_id) dbCl[row.source_event_id].items.push(item);
       else dbCl[row.source_event_id].custom.push(item);
     });
     if (Object.keys(dbCl).length > 0) local.checklists = {...(local.checklists||{}), ...dbCl};
-    saveTravelState(local);
+    if (ovRows.length || blkRows.length || clRows.length) saveTravelState(local);
     const days = cfg.planning_window==='today'?1:cfg.planning_window==='7d'?7:2;
     const cal  = await fetchCalendarEvents(days);
     if (cal?.error) { setCalError(cal.error); }
