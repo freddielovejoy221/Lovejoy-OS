@@ -4535,8 +4535,7 @@ function TravelPage() {
     }
 
     setSubmitting(true); // disable Approve button immediately
-    // Cross-device duplicate check: check Supabase before creating
-    const eId = pendingBlock.source_event_id;
+    // Cross-device duplicate check: Supabase wins over localStorage
     const dbBlock = await checkTravelBlockDB(userId, eId);
     if (dbBlock) {
       // DB says block already exists — update localStorage too
