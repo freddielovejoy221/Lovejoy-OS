@@ -249,6 +249,64 @@ function buildNavLinks(destination, origin, mode) {
 const GAP_COLOUR = {comfortable:'var(--accent)',manageable:'var(--text)',tight:'var(--amber)',overloaded:'var(--red)',unknown:'var(--muted)'};
 const GAP_LABEL  = {comfortable:'Comfortable',manageable:'Manageable',tight:'Tight ⚠',overloaded:'Overloaded ⚠⚠',unknown:'Unknown'};
 
+// ── TRAVEL BUFFER DB HELPERS (write-through to Supabase) ─────
+// Non-blocking. Fail silently — localStorage is the cache/fallback.
+
+async function upsertTravelOverrideDB(userId, eventId, eventMeta, override) {
+  if (!userId) return;
+  try {
+    await supabase.from('travel_event_overrides').upsert({
+      user_id:userId, source_event_id:eventId,
+      source_event_start:eventMeta?.start||null, source_event_title:eventMeta?.title||null,
+      source_event_location:eventMeta?.location||null,
+      journey_time_minutes:override.journeyMins||null, travel_mode:override.mode||null,
+      preset_id:override.presetId||null, custom_start_location:override.startLocationCustom||null,
+      dismissed:override.dismissed||false, updated_at:new Date().toISOString(),
+    },{onConflict:'user_id,source_event_id'});
+  } catch(e){}
+}
+
+async function checkTravelBlockDB(userId, eventId) {
+  if (!userId) return null;
+  try {
+    const {data} = await supabase.from('travel_created_blocks')
+      .select('id,status,block_title').eq('user_id',userId).eq('source_event_id',eventId).maybeSingle();
+    return data;
+  } catch(e){ return null; }
+}
+
+async function upsertTravelBlockDB(userId, eventId, block) {
+  if (!userId) return;
+  try {
+    await supabase.from('travel_created_blocks').upsert({
+      user_id:userId, source_event_id:eventId,
+      source_event_start:block.source_event_start||null, source_event_title:block.source_event_title||null,
+      travel_idempotency_key:block.ikey||null, status:'created',
+      block_title:block.title||null, block_date:block.date||null,
+      block_start_time:block.start_time||null, updated_at:new Date().toISOString(),
+    },{onConflict:'user_id,source_event_id'});
+  } catch(e){}
+}
+
+async function syncChecklistDB(userId, eventId, cl) {
+  if (!userId) return;
+  try {
+    const allItems = [...(cl.items||[]),...(cl.custom||[])];
+    await supabase.from('travel_checklist_items').delete().eq('user_id',userId).eq('source_event_id',eventId);
+    if (allItems.length > 0) {
+      await supabase.from('travel_checklist_items').insert(
+        allItems.map((item,i)=>{
+          const isC = String(item.id).startsWith('c_');
+          return {user_id:userId,source_event_id:eventId,
+            prep_item_id:isC?null:item.id, custom_text:isC?item.name:null,
+            name:item.name, importance:item.importance||'normal',
+            timing:item.timing||'anytime', completed:item.done||false, sort_order:i};
+        })
+      );
+    }
+  } catch(e){}
+}
+
 // Determine likely start location from the previous event in the window
 function calcStartLocation(event, allTimedEvents, defaultName, defaultAddress) {
   const eStart = new Date(event.start);
@@ -3900,7 +3958,7 @@ function PrepItemLibraryPage() {
 
 // ── PREP CHECKLIST COMPONENT ──────────────────────────────────
 // Compact per-trip checklist inside TravelPage event cards
-function PrepChecklist({eventId, presetPrepItemIds, allPrepItems}) {
+function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync}) {
   const getChecklist = () => {
     const s = loadTravelState();
     return s.checklists?.[eventId] || null;
@@ -3918,6 +3976,7 @@ function PrepChecklist({eventId, presetPrepItemIds, allPrepItems}) {
     s.checklists[eventId] = newCl;
     saveTravelState(s);
     setCl(newCl);
+    if (onSync) onSync(newCl); // non-blocking DB write-through
   };
 
   const generateFromPreset = () => {
@@ -4266,6 +4325,7 @@ function TravelPage() {
   const [presets,  setPresets]  = useState([]);
   const [prepItems,setPrepItems]= useState([]);
   const [events,   setEvents]   = useState([]);
+  const [userId,   setUserId]   = useState(null);
   const [loading,  setLoading]  = useState(true);
   const [calError, setCalError] = useState(null);
   const [editId,   setEditId]   = useState(null);
@@ -4283,13 +4343,47 @@ function TravelPage() {
   const load = async () => {
     setLoading(true);
     const {data:{user}} = await supabase.auth.getUser();
-    const [tsRes, prRes, piRes] = await Promise.all([
+    const [tsRes, prRes, piRes, ovRes, blkRes, clRes] = await Promise.all([
       supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
       supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
       supabase.from('prep_items').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
+      // DB-backed travel state (graceful fail if tables not yet created)
+      supabase.from('travel_event_overrides').select('*').eq('user_id',user.id).catch(()=>({data:[]})),
+      supabase.from('travel_created_blocks').select('*').eq('user_id',user.id).catch(()=>({data:[]})),
+      supabase.from('travel_checklist_items').select('*').eq('user_id',user.id).order('sort_order').catch(()=>({data:[]})),
     ]);
     const cfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
     setTs(cfg); setPresets(prRes.data||[]); setPrepItems(piRes.data||[]);
+    setUserId(user.id);
+
+    // Merge Supabase state into localStorage (DB wins per-event)
+    const local = loadTravelState();
+    (ovRes.data||[]).forEach(row => {
+      if (row.dismissed) {
+        if (!local.dismissed.includes(row.source_event_id)) local.dismissed.push(row.source_event_id);
+      } else {
+        local.overrides[row.source_event_id] = {
+          journeyMins: row.journey_time_minutes, mode: row.travel_mode,
+          presetId: row.preset_id, startLocationCustom: row.custom_start_location,
+        };
+      }
+    });
+    if (!local.createdBlocks) local.createdBlocks = {};
+    (blkRes.data||[]).forEach(row => {
+      local.createdBlocks[row.source_event_id] = {
+        ikey:row.travel_idempotency_key, title:row.block_title,
+        date:row.block_date, status:row.status, created_at:row.created_at,
+      };
+    });
+    const dbCl = {};
+    (clRes.data||[]).forEach(row => {
+      if (!dbCl[row.source_event_id]) dbCl[row.source_event_id] = {items:[],custom:[],generated_at:null};
+      const item = {id:row.prep_item_id||('c_'+row.id), name:row.name, timing:row.timing, importance:row.importance, done:row.completed};
+      if (row.prep_item_id) dbCl[row.source_event_id].items.push(item);
+      else dbCl[row.source_event_id].custom.push(item);
+    });
+    if (Object.keys(dbCl).length > 0) local.checklists = {...(local.checklists||{}), ...dbCl};
+    saveTravelState(local);
     const days = cfg.planning_window==='today'?1:cfg.planning_window==='7d'?7:2;
     const cal  = await fetchCalendarEvents(days);
     if (cal?.error) { setCalError(cal.error); }
@@ -4351,16 +4445,17 @@ function TravelPage() {
   const pColour   = p => p==='overloaded'?'var(--red)':p==='tight'?'var(--amber)':p==='moderate'?'var(--text)':'var(--muted)';
 
   const dismiss = (id) => {
+    const event = events.find(e=>e.id===id);
     const s = loadTravelState();
     s.dismissed = [...new Set([...s.dismissed, id])];
     saveTravelState(s);
     setEvents(ev=>ev.filter(e=>e.id!==id));
+    upsertTravelOverrideDB(userId, id, event, {dismissed:true}); // non-blocking
   };
 
-  const saveOverride = (id) => {
-    const s = loadTravelState();
-    // Normalize: journey time of 0 or empty means "not set" — prevents event being filtered out
+  const saveOverride = (id, eventMeta) => {
     const normalized = { ...editVals, journeyMins: (editVals.journeyMins > 0 ? editVals.journeyMins : null) };
+    const s = loadTravelState();
     s.overrides[id] = normalized;
     // Auto-generate checklist from new preset if one isn't already started
     const chosenPreset = normalized.presetId ? presets.find(p=>p.id===normalized.presetId) : defaultPreset;
@@ -4373,7 +4468,8 @@ function TravelPage() {
       s.checklists[id] = {items:clItems, custom:[], generated_at:new Date().toISOString()};
     }
     saveTravelState(s);
-    setEditId(null); setEvents(ev=>[...ev]); // re-render
+    upsertTravelOverrideDB(userId, id, eventMeta, normalized); // non-blocking
+    setEditId(null); setEvents(ev=>[...ev]);
   };
 
   const proposeBlock = (e, sg, cfg) => {
@@ -4439,6 +4535,19 @@ function TravelPage() {
     }
 
     setSubmitting(true); // disable Approve button immediately
+    // Cross-device duplicate check: check Supabase before creating
+    const eId = pendingBlock.source_event_id;
+    const dbBlock = await checkTravelBlockDB(userId, eId);
+    if (dbBlock) {
+      // DB says block already exists — update localStorage too
+      const s3 = loadTravelState();
+      if (!s3.createdBlocks) s3.createdBlocks = {};
+      s3.createdBlocks[eId] = {title:dbBlock.block_title,status:dbBlock.status,created_at:new Date().toISOString()};
+      saveTravelState(s3);
+      setSubmitting(false); setPendingBlock(null); setProposing(null);
+      alert('Travel block already exists for this event (confirmed in database).');
+      return;
+    }
     const r = await applyProposedAction('create_calendar_block', pendingBlock);
     const {data:{user}} = await supabase.auth.getUser();
 
@@ -4453,7 +4562,6 @@ function TravelPage() {
     });
 
     if (r.ok) {
-      // Persist to localStorage so this event shows as "already created" after page refresh
       const s2 = loadTravelState();
       if (!s2.createdBlocks) s2.createdBlocks = {};
       s2.createdBlocks[eId] = {
@@ -4461,6 +4569,7 @@ function TravelPage() {
         date: pendingBlock.date, created_at: new Date().toISOString(),
       };
       saveTravelState(s2);
+      upsertTravelBlockDB(userId, eId, pendingBlock); // non-blocking DB write
       // Debug Log entry
       if (user) supabase.from('helm_logs').insert({
         user_id:user.id, function_name:'travel_buffer', action:'block_created', status:'success',
@@ -4611,7 +4720,7 @@ function TravelPage() {
                     onChange={e2=>setEditVals(v=>({...v,startLocationCustom:e2.target.value?{name:e2.target.value,address:e2.target.value}:null}))}/>
                 </div>
                 <div className="row" style={{gap:6}}>
-                  <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id)}>Save</button>
+                  <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id, e)}>Save</button>
                   <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(null);setEditVals({});}}>Cancel</button>
                 </div>
               </div>
@@ -4650,6 +4759,7 @@ function TravelPage() {
               eventId={e.id}
               presetPrepItemIds={pr?.prep_item_ids||[]}
               allPrepItems={prepItems}
+              onSync={userId ? (cl)=>syncChecklistDB(userId, e.id, cl) : null}
             />
           </div>
         );
