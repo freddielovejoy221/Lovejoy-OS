@@ -4551,8 +4551,6 @@ function TravelPage() {
               </div>
               <div style={{flexShrink:0,textAlign:'right'}}>
                 <div style={{fontSize:11,color:'var(--muted)'}}>{TRAVEL_MODE_LABEL[mode]||mode}</div>
-                <div style={{fontSize:11,color:'var(--muted)'}}>{pr?.name||'Default'}</div>
-                {/* v2: gap badge */}
                 {gapLabel && gapLabel!=='comfortable' && gapLabel!=='unknown' && (
                   <div style={{fontSize:9,fontWeight:700,color:GAP_COLOUR[gapLabel],marginTop:2}}>
                     {GAP_LABEL[gapLabel]}
@@ -4577,27 +4575,18 @@ function TravelPage() {
               </div>
             )}
 
-            {/* v2: prep suggestions */}
-            {profilePrep?.length > 0 && (
-              <div style={{background:'rgba(79,124,255,0.06)',borderRadius:6,padding:'6px 10px',marginBottom:8,fontSize:11}}>
-                <div style={{fontWeight:600,marginBottom:3}}>Prep needed:</div>
-                {profilePrep.map((p,i)=><div key={i} style={{color:'var(--muted)'}}>• {p}</div>)}
-              </div>
-            )}
-
             <div className="meta" style={{marginBottom:8}}>
               Journey: {jMins!=null ? '~'+jMins+' min (manual)' : 'unknown'} · Prep: {prep}m · Buffer: {pre}m
               {gapLabel==='comfortable'&&<span style={{color:'var(--accent)'}}> · Gap OK</span>}
             </div>
 
-            {/* Edit panel — v2 includes profile + start location override */}
+            {/* Edit panel — simplified */}
             {isEditing && (
               <div style={{background:'var(--surface2)',borderRadius:6,padding:10,marginBottom:10}}>
-                <div style={{fontSize:12,fontWeight:600,marginBottom:8}}>Journey details</div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                   <div>
                     <div style={{fontSize:11,marginBottom:3}}>Journey time (min)</div>
-                    <input className="input" type="number" min="0" placeholder="e.g. 55"
+                    <input className="input" type="number" min="0" placeholder="e.g. 45"
                       value={editVals.journeyMins??''} onChange={e2=>setEditVals(v=>({...v,journeyMins:e2.target.value===''?null:+e2.target.value}))}/>
                   </div>
                   <div>
@@ -4613,34 +4602,13 @@ function TravelPage() {
                     <option value="">Default settings</option>
                     {presets.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
+                  {(() => { const cp = editVals.presetId ? presets.find(p=>p.id===editVals.presetId) : null; return cp?.prep_item_ids?.length > 0 ? <div style={{fontSize:10,color:'var(--accent)',marginTop:2}}>↺ {cp.prep_item_ids.length} prep items will populate checklist on save</div> : null; })()}
                 </div>
                 <div style={{marginBottom:8}}>
-                  <div style={{fontSize:11,marginBottom:3}}>Custom start location (leave blank to auto-detect)</div>
+                  <div style={{fontSize:11,marginBottom:3}}>Start from <span style={{color:'var(--muted)'}}>— leave blank to auto-detect from calendar</span></div>
                   <input className="input" placeholder={'Auto: ' + startLoc.name}
                     value={editVals.startLocationCustom?.address||''}
                     onChange={e2=>setEditVals(v=>({...v,startLocationCustom:e2.target.value?{name:e2.target.value,address:e2.target.value}:null}))}/>
-                </div>
-                <div style={{borderTop:'1px solid var(--border)',paddingTop:8,marginBottom:8}}>
-                  <div style={{fontSize:11,fontWeight:600,marginBottom:6}}>Trip profile</div>
-                  <div style={{marginBottom:6}}>
-                    <div style={{fontSize:11,marginBottom:3}}>Kit level</div>
-                    <select className="input" value={(editVals.profile?.kit_level)||'normal'} onChange={e2=>setEditVals(v=>({...v,profile:{...(v.profile||{}),kit_level:e2.target.value}}))}>
-                      <option value="light">Light — just myself</option>
-                      <option value="normal">Normal — day bag</option>
-                      <option value="kit-heavy">Kit-heavy — sailing/sports/full kit</option>
-                    </select>
-                  </div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
-                    {[['requires_laptop','💻 Laptop bag'],['requires_overnight','🧳 Overnight bag'],
-                      ['requires_smart_clothes','👔 Smart clothes'],['requires_food_water','🥤 Food/water'],
-                      ['needs_parking','🅿️ Parking'],['check_weather','🌤 Check weather']].map(([k,l])=>(
-                      <label key={k} style={{fontSize:11,display:'flex',gap:5,alignItems:'center',cursor:'pointer'}}>
-                        <input type="checkbox" checked={!!(editVals.profile?.[k])}
-                          onChange={e2=>setEditVals(v=>({...v,profile:{...(v.profile||{}),[k]:e2.target.checked}}))}/>
-                        {l}
-                      </label>
-                    ))}
-                  </div>
                 </div>
                 <div className="row" style={{gap:6}}>
                   <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id)}>Save</button>
