@@ -4525,7 +4525,7 @@ function TravelPage() {
       {travelEvents.map(e=>{
         const cfg = ts||DEFAULT_TRAVEL_SETTINGS;
         const sg  = getSuggestion(e, defaultPreset, cfg, events);
-        const { times, mode, jMins, prep, pre, nav, pr, startLoc, gapLabel, profile, prepItems } = sg;
+        const { times, mode, jMins, prep, pre, nav, pr, startLoc, gapLabel, profile, prepItems: profilePrep } = sg;
         const isEditing  = editId===e.id;
         const isProposing = proposing===e.id;
 
@@ -4574,10 +4574,10 @@ function TravelPage() {
             )}
 
             {/* v2: prep suggestions */}
-            {prepItems.length > 0 && (
+            {profilePrep?.length > 0 && (
               <div style={{background:'rgba(79,124,255,0.06)',borderRadius:6,padding:'6px 10px',marginBottom:8,fontSize:11}}>
                 <div style={{fontWeight:600,marginBottom:3}}>Prep needed:</div>
-                {prepItems.map((p,i)=><div key={i} style={{color:'var(--muted)'}}>• {p}</div>)}
+                {profilePrep.map((p,i)=><div key={i} style={{color:'var(--muted)'}}>• {p}</div>)}
               </div>
             )}
 
