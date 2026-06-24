@@ -3755,9 +3755,273 @@ function ProposedActions({ changes, sourceRequest }) {
 
 // ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
 // ── TRAVEL SETTINGS PAGE ─────────────────────────────────────
+// ── PREP ITEM LIBRARY PAGE ────────────────────────────────────
+const PREP_CATEGORIES = ['Work bag','Kit','Sailing','Paddle sports','Gym/swim','Overnight','Smart clothes','Food/water','Medication/health','Tech/charging','Documents','Vehicle','Other'];
+const PREP_TIMINGS   = {anytime:'Anytime',night_before:'Night before',morning_of:'Morning of',before_leaving:'Before leaving'};
+const PREP_STARTERS  = [
+  {name:'Laptop bag',      category:'Work bag',          importance:'important', default_timing:'night_before'},
+  {name:'iPad',            category:'Tech/charging',      importance:'normal',   default_timing:'morning_of'},
+  {name:'Phone charger',   category:'Tech/charging',      importance:'important',default_timing:'night_before'},
+  {name:'Power bank',      category:'Tech/charging',      importance:'normal',   default_timing:'anytime'},
+  {name:'Car charger',     category:'Vehicle',            importance:'normal',   default_timing:'anytime'},
+  {name:'Water bottle',    category:'Food/water',         importance:'important',default_timing:'morning_of'},
+  {name:'Lunch/snacks',    category:'Food/water',         importance:'normal',   default_timing:'morning_of'},
+  {name:'Hayfever meds',   category:'Medication/health',  importance:'critical', default_timing:'morning_of'},
+  {name:'Waterproofs',     category:'Kit',                importance:'important',default_timing:'night_before'},
+  {name:'Warm layer',      category:'Kit',                importance:'normal',   default_timing:'night_before'},
+  {name:'Smart clothes',   category:'Smart clothes',      importance:'important',default_timing:'night_before'},
+  {name:'Overnight bag',   category:'Overnight',          importance:'critical', default_timing:'night_before'},
+  {name:'Gym bag',         category:'Gym/swim',           importance:'important',default_timing:'night_before'},
+  {name:'Swim kit',        category:'Gym/swim',           importance:'important',default_timing:'night_before'},
+  {name:'Towel',           category:'Gym/swim',           importance:'normal',   default_timing:'morning_of'},
+  {name:'Goggles',         category:'Gym/swim',           importance:'normal',   default_timing:'night_before'},
+  {name:'Sailing kit',     category:'Sailing',            importance:'critical', default_timing:'night_before'},
+  {name:'SUP/paddle kit',  category:'Paddle sports',      importance:'critical', default_timing:'night_before'},
+  {name:'Wetsuit',         category:'Paddle sports',      importance:'important',default_timing:'night_before'},
+  {name:'Buoyancy aid',    category:'Paddle sports',      importance:'critical', default_timing:'night_before'},
+  {name:'Dry bag',         category:'Paddle sports',      importance:'normal',   default_timing:'morning_of'},
+  {name:'Instructor kit',  category:'Kit',                importance:'important',default_timing:'night_before'},
+  {name:'Site keys',       category:'Documents',          importance:'critical', default_timing:'morning_of'},
+  {name:'RYA paperwork',   category:'Documents',          importance:'important',default_timing:'night_before'},
+  {name:'Tow bar/trailer keys', category:'Vehicle',       importance:'critical', default_timing:'morning_of'},
+];
+
+function PrepItemLibraryPage() {
+  const [items, setItems] = useState([]);
+  const [edit,  setEdit]  = useState(null); // null=list, {}=new, {..}=edit
+  const [saving,setSaving]= useState(false);
+  const [filter,setFilter]= useState('all');
+
+  useEffect(()=>{ load(); },[]);
+
+  const load = async () => {
+    const {data:{user}} = await supabase.auth.getUser();
+    const {data} = await supabase.from('prep_items').select('*').eq('user_id',user.id).order('category').order('sort_order').order('name');
+    if (data && data.length > 0) { setItems(data); return; }
+    // Seed starters
+    const seeds = PREP_STARTERS.map((s,i)=>({...s,user_id:user.id,is_active:true,related_area:'travel',sort_order:i,notes:''}));
+    const {data:ins} = await supabase.from('prep_items').insert(seeds).select();
+    setItems(ins||[]);
+  };
+
+  const save = async () => {
+    if (!edit?.name) return;
+    setSaving(true);
+    const {data:{user}} = await supabase.auth.getUser();
+    if (edit.id) {
+      await supabase.from('prep_items').update({name:edit.name,category:edit.category||'Other',notes:edit.notes||null,importance:edit.importance||'normal',default_timing:edit.default_timing||'anytime',is_active:edit.is_active!==false}).eq('id',edit.id);
+    } else {
+      await supabase.from('prep_items').insert({user_id:user.id,name:edit.name,category:edit.category||'Other',notes:edit.notes||null,importance:edit.importance||'normal',default_timing:edit.default_timing||'anytime',is_active:true,sort_order:items.length});
+    }
+    setSaving(false); setEdit(null); load();
+  };
+
+  const archive = async (id) => {
+    await supabase.from('prep_items').update({is_active:false}).eq('id',id);
+    setItems(it=>it.filter(x=>x.id!==id));
+  };
+
+  const filtered = filter==='all' ? items : filter==='archived' ? items.filter(x=>!x.is_active) : items.filter(x=>x.is_active);
+  const IMP_C = {critical:'var(--red)',important:'var(--amber)',normal:'var(--text)'};
+
+  if (edit !== null) return (
+    <div className="page">
+      <h1 style={{fontSize:18,fontWeight:700,marginBottom:16}}>{edit.id?'Edit prep item':'New prep item'}</h1>
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:13,marginBottom:4}}>Name</div>
+        <input className="input" value={edit.name||''} onChange={e=>setEdit(p=>({...p,name:e.target.value}))} placeholder="e.g. Sailing kit"/>
+      </div>
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:13,marginBottom:4}}>Category</div>
+        <select className="input" value={edit.category||'Other'} onChange={e=>setEdit(p=>({...p,category:e.target.value}))}>
+          {PREP_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+        <div>
+          <div style={{fontSize:12,marginBottom:4}}>Importance</div>
+          <select className="input" value={edit.importance||'normal'} onChange={e=>setEdit(p=>({...p,importance:e.target.value}))}>
+            <option value="normal">Normal</option><option value="important">Important</option><option value="critical">Critical</option>
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:12,marginBottom:4}}>Default timing</div>
+          <select className="input" value={edit.default_timing||'anytime'} onChange={e=>setEdit(p=>({...p,default_timing:e.target.value}))}>
+            {Object.entries(PREP_TIMINGS).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+      </div>
+      <div style={{marginBottom:12}}>
+        <div style={{fontSize:12,marginBottom:4}}>Notes (optional)</div>
+        <input className="input" value={edit.notes||''} onChange={e=>setEdit(p=>({...p,notes:e.target.value}))} placeholder="e.g. Check charged"/>
+      </div>
+      <div className="row" style={{gap:8}}>
+        <button className="btn btn-primary" disabled={saving||!edit.name} onClick={save}>{saving?'Saving…':'Save'}</button>
+        <button className="btn btn-ghost" onClick={()=>setEdit(null)}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:8}}>
+        <h1 style={{fontSize:18,fontWeight:700,margin:0}}>Prep Item Library</h1>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setEdit({name:'',category:'Other',importance:'normal',default_timing:'anytime'})}>+ Add</button>
+      </div>
+      <div className="row" style={{gap:6,marginBottom:12}}>
+        {[['all','All'],['active','Active'],['archived','Archived']].map(([v,l])=>(
+          <button key={v} className={'btn btn-sm '+(filter===v?'btn-primary':'btn-ghost')} onClick={()=>setFilter(v)}>{l}</button>
+        ))}
+      </div>
+      {PREP_CATEGORIES.filter(cat=>filtered.some(it=>it.category===cat)).map(cat=>(
+        <div key={cat} style={{marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>{cat}</div>
+          {filtered.filter(it=>it.category===cat).map(it=>(
+            <div key={it.id} className="card-sm" style={{marginBottom:6,opacity:it.is_active?1:0.5}}>
+              <div className="row-between">
+                <div>
+                  <span style={{fontSize:13,fontWeight:500}}>{it.name}</span>
+                  <span style={{fontSize:10,color:IMP_C[it.importance]||'var(--muted)',marginLeft:6}}>{it.importance}</span>
+                  <span style={{fontSize:10,color:'var(--muted)',marginLeft:6}}>{PREP_TIMINGS[it.default_timing]||it.default_timing}</span>
+                </div>
+                <div className="row" style={{gap:4}}>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>setEdit({...it})}>Edit</button>
+                  {it.is_active && <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={()=>archive(it.id)}>Archive</button>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+      {filtered.length===0&&<div className="meta">No items. Add one above.</div>}
+    </div>
+  );
+}
+
+// ── PREP CHECKLIST COMPONENT ──────────────────────────────────
+// Compact per-trip checklist inside TravelPage event cards
+function PrepChecklist({eventId, presetPrepItemIds, allPrepItems}) {
+  // Checklist state lives in localStorage ljos_travel_state.checklists[eventId]
+  const getChecklist = () => {
+    const s = loadTravelState();
+    return s.checklists?.[eventId] || null;
+  };
+  const [cl, setCl] = useState(()=>getChecklist());
+  const [expanded, setExpanded] = useState(false);
+  const [addingCustom, setAddingCustom] = useState(false);
+  const [customName, setCustomName] = useState('');
+
+  const persist = (newCl) => {
+    const s = loadTravelState();
+    if (!s.checklists) s.checklists = {};
+    s.checklists[eventId] = newCl;
+    saveTravelState(s);
+    setCl(newCl);
+  };
+
+  const generateFromPreset = () => {
+    const ids = presetPrepItemIds || [];
+    const items = ids.map(id=>{
+      const pi = allPrepItems.find(p=>p.id===id);
+      if (!pi) return null;
+      return {id:pi.id, name:pi.name, timing:pi.default_timing, importance:pi.importance, done:false};
+    }).filter(Boolean);
+    persist({items, custom:[], generated_at:new Date().toISOString()});
+  };
+
+  const toggle = (id, isCustom) => {
+    const newCl = {...cl};
+    if (isCustom) {
+      newCl.custom = (newCl.custom||[]).map(x=>x.id===id?{...x,done:!x.done}:x);
+    } else {
+      newCl.items = (newCl.items||[]).map(x=>x.id===id?{...x,done:!x.done}:x);
+    }
+    persist(newCl);
+  };
+
+  const removeItem = (id, isCustom) => {
+    const newCl = {...cl};
+    if (isCustom) newCl.custom = (newCl.custom||[]).filter(x=>x.id!==id);
+    else newCl.items = (newCl.items||[]).filter(x=>x.id!==id);
+    persist(newCl);
+  };
+
+  const addCustom = () => {
+    if (!customName.trim()) return;
+    const newCl = {...cl};
+    newCl.custom = [...(newCl.custom||[]), {id:'c_'+Date.now(), name:customName.trim(), timing:'anytime', importance:'normal', done:false}];
+    persist(newCl);
+    setCustomName(''); setAddingCustom(false);
+  };
+
+  const allItems = [...(cl?.items||[]), ...(cl?.custom||[])];
+  const doneCount = allItems.filter(x=>x.done).length;
+  const total = allItems.length;
+  const criticalPending = allItems.filter(x=>!x.done && x.importance==='critical');
+  const nightBefore = allItems.filter(x=>!x.done && x.timing==='night_before');
+  const status = total===0?'empty':doneCount===total?'ready':doneCount>0?'part-done':'not-started';
+  const statusLabel = {empty:'No checklist',ready:'✓ Ready',	'part-done':`${doneCount}/${total} done`,'not-started':`0/${total} done`}[status];
+  const statusColour = {empty:'var(--muted)',ready:'var(--accent)','part-done':'var(--amber)','not-started':'var(--red)'}[status];
+
+  if (!cl) return (
+    <div style={{borderTop:'1px solid var(--border)',paddingTop:8,marginTop:4}}>
+      <div className="row-between">
+        <div style={{fontSize:11,color:'var(--muted)'}}>Prep checklist</div>
+        <button className="btn btn-ghost btn-sm" style={{fontSize:10}} onClick={generateFromPreset}>
+          {presetPrepItemIds?.length>0 ? 'Generate from preset' : 'Start checklist'}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{borderTop:'1px solid var(--border)',paddingTop:8,marginTop:4}}>
+      <div className="row-between" style={{marginBottom:expanded?6:0}}>
+        <div className="row" style={{gap:6}}>
+          <span style={{fontSize:11,fontWeight:600,color:statusColour}}>{statusLabel}</span>
+          {criticalPending.length>0&&!expanded&&<span style={{fontSize:10,color:'var(--red)'}}>⚠ {criticalPending[0].name}</span>}
+          {nightBefore.length>0&&!expanded&&<span style={{fontSize:10,color:'var(--amber)'}}>🌙 {nightBefore.length} tonight</span>}
+        </div>
+        <div className="row" style={{gap:4}}>
+          <button className="btn btn-ghost btn-sm" style={{fontSize:10}} onClick={()=>setExpanded(e=>!e)}>{expanded?'Collapse':'Checklist'}</button>
+          <button className="btn btn-ghost btn-sm" style={{fontSize:10,color:'var(--muted)'}} onClick={generateFromPreset}>↺</button>
+        </div>
+      </div>
+      {expanded && (
+        <div>
+          {allItems.map((item,i)=>{
+            const isCustom = !!(cl.custom||[]).find(c=>c.id===item.id);
+            return (
+              <div key={item.id} className="row-between" style={{padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
+                <label style={{display:'flex',gap:6,alignItems:'center',flex:1,cursor:'pointer',fontSize:12}}>
+                  <input type="checkbox" checked={!!item.done} onChange={()=>toggle(item.id,isCustom)}/>
+                  <span style={{textDecoration:item.done?'line-through':'none',color:item.done?'var(--muted)':'var(--text)'}}>{item.name}</span>
+                  {item.importance==='critical'&&!item.done&&<span style={{fontSize:9,color:'var(--red)'}}>critical</span>}
+                  {item.timing==='night_before'&&!item.done&&<span style={{fontSize:9,color:'var(--accent)'}}>🌙</span>}
+                </label>
+                <button style={{background:'none',border:'none',color:'var(--muted)',cursor:'pointer',fontSize:14,padding:'0 4px'}} onClick={()=>removeItem(item.id,isCustom)}>×</button>
+              </div>
+            );
+          })}
+          {addingCustom ? (
+            <div className="row" style={{gap:4,marginTop:6}}>
+              <input className="input" style={{flex:1,fontSize:12}} placeholder="Item name" value={customName} onChange={e=>setCustomName(e.target.value)} autoFocus/>
+              <button className="btn btn-primary btn-sm" onClick={addCustom}>Add</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setAddingCustom(false);setCustomName('');}}>✕</button>
+            </div>
+          ) : (
+            <button className="btn btn-ghost btn-sm" style={{marginTop:4,fontSize:11}} onClick={()=>setAddingCustom(true)}>+ Add item</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TravelSettingsPage() {
   const [ts,  setTs]  = useState(null);
   const [presets, setPresets] = useState([]);
+  const [prepItems, setPrepItems] = useState([]);
   const [editPreset, setEditPreset] = useState(null);
   const [saving, setSaving] = useState(false);
   const [seeded, setSeeded] = useState(false);
@@ -3779,12 +4043,13 @@ function TravelSettingsPage() {
   const load = async () => {
     const {data:{user}} = await supabase.auth.getUser();
     if (!user) return;
-    const [tsRes, prRes] = await Promise.all([
+    const [tsRes, prRes, piRes] = await Promise.all([
       supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
       supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
+      supabase.from('prep_items').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
     ]);
     const cfg = tsRes.data || {...DEFAULT_TRAVEL_SETTINGS};
-    setTs(cfg);
+    setTs(cfg); setPrepItems(piRes.data||[]);
     if (prRes.data && prRes.data.length > 0) {
       setPresets(prRes.data);
     } else if (!seeded) {
@@ -3816,6 +4081,7 @@ function TravelSettingsPage() {
         post_event_buffer_mins:+editPreset.post_event_buffer_mins||10,
         default_journey_mins:editPreset.default_journey_mins?+editPreset.default_journey_mins:null,
         notes:editPreset.notes||null,
+        prep_item_ids: editPreset.prep_item_ids||[],
       }).eq('id',editPreset.id);
     } else {
       await supabase.from('travel_presets').insert({
@@ -3825,6 +4091,7 @@ function TravelSettingsPage() {
         post_event_buffer_mins:+editPreset.post_event_buffer_mins||10,
         default_journey_mins:editPreset.default_journey_mins?+editPreset.default_journey_mins:null,
         notes:editPreset.notes||null, sort_order:presets.length,
+        prep_item_ids: editPreset.prep_item_ids||[],
       });
     }
     setSaving(false); setEditPreset(null); load();
@@ -3865,6 +4132,23 @@ function TravelSettingsPage() {
         <button className="btn btn-primary" disabled={saving||!editPreset.name} onClick={savePreset}>{saving?'Saving…':'Save'}</button>
         <button className="btn btn-ghost" onClick={()=>setEditPreset(null)}>Cancel</button>
       </div>
+      {prepItems.length > 0 && (
+        <div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+          <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>Default prep items for this preset</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}}>
+            {prepItems.map(pi=>{
+              const sel = (editPreset.prep_item_ids||[]).includes(pi.id);
+              return (
+                <label key={pi.id} style={{fontSize:11,display:'flex',gap:4,alignItems:'center',cursor:'pointer'}}>
+                  <input type="checkbox" checked={sel}
+                    onChange={()=>setEditPreset(p=>({...p,prep_item_ids:sel?(p.prep_item_ids||[]).filter(x=>x!==pi.id):[...(p.prep_item_ids||[]),pi.id]}))}/>
+                  {pi.name}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -3938,6 +4222,7 @@ function TravelSettingsPage() {
 function TravelPage() {
   const [ts,       setTs]       = useState(null);
   const [presets,  setPresets]  = useState([]);
+  const [prepItems,setPrepItems]= useState([]);
   const [events,   setEvents]   = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [calError, setCalError] = useState(null);
@@ -3956,12 +4241,13 @@ function TravelPage() {
   const load = async () => {
     setLoading(true);
     const {data:{user}} = await supabase.auth.getUser();
-    const [tsRes, prRes] = await Promise.all([
+    const [tsRes, prRes, piRes] = await Promise.all([
       supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
       supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
+      supabase.from('prep_items').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
     ]);
     const cfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
-    setTs(cfg); setPresets(prRes.data||[]);
+    setTs(cfg); setPresets(prRes.data||[]); setPrepItems(piRes.data||[]);
     const days = cfg.planning_window==='today'?1:cfg.planning_window==='7d'?7:2;
     const cal  = await fetchCalendarEvents(days);
     if (cal?.error) { setCalError(cal.error); }
@@ -4334,6 +4620,13 @@ function TravelPage() {
               ) : null}
               <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={()=>dismiss(e.id)}>Dismiss</button>
             </div>
+
+            {/* Prep checklist */}
+            <PrepChecklist
+              eventId={e.id}
+              presetPrepItemIds={pr?.prep_item_ids||[]}
+              allPrepItems={prepItems}
+            />
           </div>
         );
       })}
@@ -5263,6 +5556,9 @@ function DashboardPage({ user, onNavigate }) {
               prep_items:             prepSuggs,
               tight_gap:              tightGap,
               evening_prep_needed:    eveningPrep,
+              // checklist from localStorage
+              checklist_pending:      (() => { try { const tst=loadTravelState(); const cl=tst.checklists?.[e.id]; if(!cl) return []; return [...(cl.items||[]),...(cl.custom||[])].filter(x=>!x.done).map(x=>x.name); } catch(e2){return [];} })(),
+              checklist_night_before: (() => { try { const tst=loadTravelState(); const cl=tst.checklists?.[e.id]; if(!cl) return []; return [...(cl.items||[]),...(cl.custom||[])].filter(x=>!x.done&&x.timing==='night_before').map(x=>x.name); } catch(e2){return [];} })(),
             };
           });
           const totalMins = suggestions.reduce((acc,s)=>{
@@ -5489,6 +5785,7 @@ function App() {
     { id:'helmsettings',   label:ASSISTANT_NAME+' Settings',  icon:'box' },
     { id:'travel',         label:'Travel Buffer',             icon:'clock' },
     { id:'travelsettings', label:'Travel Settings',           icon:'box' },
+    { id:'prepitems',      label:'Prep Item Library',         icon:'box' },
     { id:'weathersettings',label:'Weather & Outdoor',         icon:'alert' },
     { id:'calendar',       label:'Calendar',                  icon:'clock' },
     { id:'projects',       label:'Projects',                  icon:'folder' },
@@ -5516,6 +5813,7 @@ function App() {
     if (page==='reviews')         return <ReviewsPage/>;
     if (page==='travel')         return <TravelPage/>;
     if (page==='travelsettings') return <TravelSettingsPage/>;
+    if (page==='prepitems')      return <PrepItemLibraryPage/>;
     if (page==='roadmap')        return <RoadmapQueuePage/>;
     if (page==='systemhealth')    return <SystemHealthPage onNavigate={setPage}/>;
     if (page==='security')        return <SecurityPage/>;
@@ -5550,7 +5848,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='security'?'Security & Privacy':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='prepitems'?'Prep Item Library':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='security'?'Security & Privacy':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
