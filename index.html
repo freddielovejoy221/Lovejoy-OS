@@ -3484,6 +3484,67 @@ function ProposedActions({ changes, sourceRequest }) {
 }
 
 // ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
+// ── SOURCE SUMMARY ────────────────────────────────────────────
+// Renders what data Helm used when generating a brief.
+// compact=true → single line for dashboard card
+// compact=false → expandable table for detail/history view
+function SourceSummary({ snap, compact }) {
+  if (!snap) return null;
+  const c = snap.counts || {};
+  const wx = snap.weather;
+  const wxAge = wx?.age_minutes;
+  const wxFresh = wx && !wx.is_stale;
+  const parts = [];
+  if (c.tasks    != null) parts.push(`${c.tasks} tasks`);
+  if (c.projects != null) parts.push(`${c.projects} projects`);
+  if (c.events   != null) parts.push(`${c.events} events`);
+  if (c.waiting  != null && c.waiting > 0) parts.push(`${c.waiting} waiting`);
+  if (c.decisions!= null && c.decisions > 0) parts.push(`${c.decisions} decisions`);
+
+  if (compact) {
+    const wxTag = wx
+      ? (wx.is_stale ? <span style={{color:'var(--amber)'}}>⚠ Weather stale</span> : <span>Weather ✓</span>)
+      : <span style={{color:'var(--muted)'}}>No weather</span>;
+    return (
+      <div style={{fontSize:10,color:'var(--muted)',marginTop:5,lineHeight:1.5}}>
+        Sources: {parts.join(' · ')}{wx !== undefined ? <> · {wxTag}</> : null}
+      </div>
+    );
+  }
+
+  // Expanded table
+  const rows = [
+    {name:'Tasks',       val: c.tasks    != null ? `${c.tasks} active`  : '–'},
+    {name:'Projects',    val: c.projects != null ? `${c.projects} active`: '–'},
+    {name:'Calendar',    val: c.events   != null ? `${c.events} events`  : 'Not fetched'},
+    {name:'Waiting For', val: c.waiting  != null ? `${c.waiting} items`  : '–'},
+    {name:'Decisions',   val: c.decisions!= null ? `${c.decisions} open` : '–'},
+  ];
+  const wxVal  = wx ? `${wx.condition || ''} · ${wxAge != null ? wxAge+'m ago' : '?'}` : 'Not included';
+  const wxColour = !wx ? 'var(--muted)' : wx.is_stale ? 'var(--amber)' : 'var(--text)';
+
+  return (
+    <div style={{marginTop:8,padding:'8px 10px',background:'var(--surface2)',borderRadius:6}}>
+      <div style={{fontSize:10,fontWeight:600,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Sources used</div>
+      {rows.map(r=>(
+        <div key={r.name} className="row-between" style={{fontSize:11,marginBottom:2}}>
+          <span style={{color:'var(--muted)'}}>{r.name}</span>
+          <span style={{color:'var(--text)'}}>{r.val}</span>
+        </div>
+      ))}
+      <div className="row-between" style={{fontSize:11,marginBottom:2}}>
+        <span style={{color:'var(--muted)'}}>Weather</span>
+        <span style={{color:wxColour}}>{wxVal}</span>
+      </div>
+      {snap.generated_at && (
+        <div style={{fontSize:10,color:'var(--muted)',marginTop:4}}>
+          Snapshot at {new Date(snap.generated_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HelmPage() {
   const [loading, setLoading] = useState(false);
   const [activeType, setActiveType] = useState(null);
@@ -3500,7 +3561,7 @@ function HelmPage() {
 
   const loadHistory = async () => {
     const { data } = await supabase.from('reviews')
-      .select('id,title,review_type,notes,prompt_used,model_used,token_usage,estimated_cost,created_at')
+      .select('id,title,review_type,notes,prompt_used,model_used,token_usage,estimated_cost,created_at,source_snapshot')
       .order('created_at', { ascending: false })
       .limit(40);
     setHistory(data || []);
@@ -3624,6 +3685,7 @@ function HelmPage() {
                             {h.estimated_cost != null && ` · ~$${h.estimated_cost.toFixed(4)}`}
                           </div>
                         )}
+                        <SourceSummary snap={h.source_snapshot} compact={false}/>
                         {parsed?.attention?.length>0 && (
                           <div style={{marginBottom:8}}>
                             <div style={{fontSize:10,fontWeight:600,color:'var(--amber)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Attention</div>
@@ -3723,6 +3785,7 @@ function HelmPage() {
           <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={()=>{setResult(null);setActiveType(null);}}>
             Clear
           </button>
+          <SourceSummary snap={result.source_snapshot} compact={false}/>
         </div>
       )}
     </div>
@@ -4338,6 +4401,7 @@ function DashboardPage({ user, onNavigate }) {
         ) : (
           <div>
             <div style={{fontSize:13,lineHeight:1.55,marginBottom:8}}>{parsedBrief.summary}</div>
+            <SourceSummary snap={brief.source_snapshot} compact={true}/>
 
             {isBriefStale(brief) && (
               <div style={{fontSize:12,color:'var(--amber)',background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'7px 10px',marginBottom:8,lineHeight:1.4}}>
@@ -4363,6 +4427,7 @@ function DashboardPage({ user, onNavigate }) {
                     ))}
                   </>
                 )}
+                <SourceSummary snap={brief.source_snapshot} compact={false}/>
               </div>
             )}
 
