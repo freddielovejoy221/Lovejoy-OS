@@ -4619,11 +4619,17 @@ function TravelPage() {
     <div className="page">
       <div className="row-between" style={{marginBottom:4}}>
         <h1 style={{fontSize:18,fontWeight:700,margin:0}}>Travel Buffer</h1>
-        <button className="btn btn-ghost btn-sm" onClick={load}>↻</button>
+        <button className="btn btn-ghost btn-sm" onClick={load}>↻ Sync</button>
       </div>
-      <div className="meta" style={{marginBottom:16}}>
+      <div className="meta" style={{marginBottom:4}}>
         {ts.planning_window==='today'?'Today only':ts.planning_window==='7d'?'Next 7 days':'Next 48 hours'} · From: {ts.default_start_name||'Home'}
         {calError && <span style={{color:'var(--red)'}}> · Calendar error</span>}
+      </div>
+      {/* DB sync status */}
+      <div style={{fontSize:10,color:'var(--muted)',marginBottom:12,padding:'3px 6px',background:'var(--surface2)',borderRadius:4,display:'inline-block'}}>
+        {userId
+          ? 'DB synced · ' + Object.keys(loadTravelState().overrides||{}).length + ' overrides · ' + Object.keys(loadTravelState().createdBlocks||{}).length + ' blocks · id:…' + userId.slice(-4)
+          : '⚠ Not signed in — changes will not sync'}
       </div>
 
       {/* Travel pressure summary */}
