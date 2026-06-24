@@ -4079,6 +4079,16 @@ function SourceSummary({ snap, compact }) {
         <span style={{color:'var(--muted)'}}>Weather</span>
         <span style={{color:wxColour}}>{wxVal}</span>
       </div>
+      {snap.travel && (
+        <div className="row-between" style={{fontSize:11,marginBottom:2}}>
+          <span style={{color:'var(--muted)'}}>Travel Buffer</span>
+          <span style={{color: snap.travel.included ? (snap.travel.unknown_journey_count>0?'var(--amber)':'var(--text)') : 'var(--muted)'}}>
+            {snap.travel.included
+              ? snap.travel.suggestion_count + ' events' + (snap.travel.unknown_journey_count>0 ? ' · ' + snap.travel.unknown_journey_count + ' unknown journey' : '')
+              : 'Not included'}
+          </span>
+        </div>
+      )}
       {snap.generated_at && (
         <div style={{fontSize:10,color:'var(--muted)',marginTop:4}}>
           Snapshot at {new Date(snap.generated_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
@@ -4865,33 +4875,65 @@ function DashboardPage({ user, onNavigate }) {
     try {
       const {data:{user}} = await supabase.auth.getUser();
       const tsRes = await supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle();
+      const prRes = await supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order');
       const tsCfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
+      const allPresets = prRes.data || [];
       if (tsCfg.enabled && tsCfg.include_in_helm) {
         const cal = await fetchCalendarEvents(2);
         const tstate = loadTravelState();
-        const events = (cal?.events||[]).filter(e=>!e.allDay && e.start && e.location && !tstate.dismissed.includes(e.id));
-        if (events.length > 0) {
+        const evts = (cal?.events||[]).filter(e=>!e.allDay && e.start && e.location && !tstate.dismissed.includes(e.id));
+        if (evts.length > 0) {
+          const nowMs = Date.now();
+          const suggestions = evts.slice(0,8).map(e=>{
+            const ov = tstate.overrides[e.id]||{};
+            const pr = ov.presetId ? allPresets.find(p=>p.id===ov.presetId) : allPresets[0] || null;
+            const mode  = ov.mode || pr?.travel_mode || tsCfg.default_travel_mode;
+            const jMins = ov.journeyMins ?? pr?.default_journey_mins ?? null;
+            const prep  = pr?.prep_buffer_mins  ?? tsCfg.prep_buffer_mins;
+            const pre   = pr?.pre_event_buffer_mins ?? tsCfg.pre_event_buffer_mins;
+            const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
+            const blockStatus = tstate.createdBlocks?.[e.id] ? 'created' : 'missing';
+
+            // Evening-before prep: event is tomorrow before 9am and journey is significant
+            const eventDate = new Date(e.start);
+            const isEarlyNextDay = (eventDate.getTime() - nowMs) < 36*3600000 && eventDate.getHours() < 9;
+            const eveningPrep = isEarlyNextDay && jMins && jMins > 20
+              ? 'Early departure — pack bag and prep kit tonight'
+              : null;
+
+            // Tight gap: get-ready time is within 2 hours of now
+            const tightGap = times && (times.getReady.getTime() - nowMs) < 2*3600000 && (times.getReady.getTime() - nowMs) > 0
+              ? 'Less than 2 hours until get-ready time'
+              : null;
+
+            return {
+              event_title:    e.title,
+              event_start:    e.start,
+              event_location: e.location,
+              travel_mode:    mode,
+              journey_mins:   jMins,
+              confidence:     jMins!=null ? 'manual' : 'unknown',
+              preset_name:    pr?.name || null,
+              get_ready:      times ? times.getReady.toISOString() : null,
+              leave_by:       times ? times.leaveBy.toISOString()  : null,
+              arrival_target: times ? times.arrivalTarget.toISOString() : null,
+              block_status:   blockStatus,
+              tight_gap:      tightGap,
+              evening_prep_needed: eveningPrep,
+            };
+          });
+          const totalMins = suggestions.reduce((acc,s)=>{
+            if (s.journey_mins==null) return acc;
+            const pr2 = allPresets.find(p=>p.name===s.preset_name)||allPresets[0];
+            return acc + s.journey_mins + (pr2?.prep_buffer_mins||tsCfg.prep_buffer_mins) + (pr2?.pre_event_buffer_mins||tsCfg.pre_event_buffer_mins);
+          }, 0);
           travelContext = {
-            planning_window:'48h',
-            start_location: tsCfg.default_start_name || 'Home',
-            suggestions: events.slice(0,8).map(e=>{
-              const ov = tstate.overrides[e.id]||{};
-              const jMins = ov.journeyMins ?? null;
-              const prep  = tsCfg.prep_buffer_mins;
-              const pre   = tsCfg.pre_event_buffer_mins;
-              const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
-              return {
-                event_title: e.title,
-                event_start: e.start,
-                event_location: e.location,
-                travel_mode: ov.mode || tsCfg.default_travel_mode,
-                journey_mins: jMins,
-                confidence: jMins!=null ? 'manual' : 'unknown',
-                get_ready: times ? times.getReady.toISOString() : null,
-                leave_by:  times ? times.leaveBy.toISOString()  : null,
-                arrival_target: times ? times.arrivalTarget.toISOString() : null,
-              };
-            }),
+            planning_window: '48h',
+            start_location:  tsCfg.default_start_name || 'Home',
+            suggestions,
+            total_travel_time_hours: totalMins > 0 ? parseFloat((totalMins/60).toFixed(1)) : null,
+            calculated_at: new Date().toISOString(),
+            is_stale: false,
           };
         }
       }
