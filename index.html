@@ -4304,7 +4304,7 @@ function TravelPage() {
     const override = state.overrides[e.id] || {};
     const pr    = override.presetId ? (presets.find(p=>p.id===override.presetId)||preset) : preset;
     const mode  = override.mode || pr?.travel_mode || cfg.default_travel_mode;
-    const jMins = override.journeyMins ?? pr?.default_journey_mins ?? null;
+    const jMins = (override.journeyMins > 0 ? override.journeyMins : null) ?? pr?.default_journey_mins ?? null;
     const prep  = pr?.prep_buffer_mins  ?? cfg.prep_buffer_mins;
     const pre   = pr?.pre_event_buffer_mins ?? cfg.pre_event_buffer_mins;
     const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
@@ -4357,9 +4357,11 @@ function TravelPage() {
 
   const saveOverride = (id) => {
     const s = loadTravelState();
-    s.overrides[id] = { ...editVals };
+    // Normalize: journey time of 0 or empty means "not set" — prevents event being filtered out
+    const normalized = { ...editVals, journeyMins: (editVals.journeyMins > 0 ? editVals.journeyMins : null) };
+    s.overrides[id] = normalized;
     // Auto-generate checklist from new preset if one isn't already started
-    const chosenPreset = editVals.presetId ? presets.find(p=>p.id===editVals.presetId) : defaultPreset;
+    const chosenPreset = normalized.presetId ? presets.find(p=>p.id===normalized.presetId) : defaultPreset;
     if (chosenPreset?.prep_item_ids?.length > 0 && !s.checklists?.[id]) {
       const clItems = (chosenPreset.prep_item_ids||[]).map(pid=>{
         const pi = prepItems.find(p=>p.id===pid);
@@ -4594,7 +4596,7 @@ function TravelPage() {
                   <div>
                     <div style={{fontSize:11,marginBottom:3}}>Journey time (min)</div>
                     <input className="input" type="number" min="0" placeholder="e.g. 55"
-                      value={editVals.journeyMins??''} onChange={e2=>setEditVals(v=>({...v,journeyMins:+e2.target.value}))}/>
+                      value={editVals.journeyMins??''} onChange={e2=>setEditVals(v=>({...v,journeyMins:e2.target.value===''?null:+e2.target.value}))}/>
                   </div>
                   <div>
                     <div style={{fontSize:11,marginBottom:3}}>Travel mode</div>
@@ -5556,7 +5558,7 @@ function DashboardPage({ user, onNavigate }) {
             const ov = tstate.overrides[e.id]||{};
             const pr = ov.presetId ? allPresets.find(p=>p.id===ov.presetId) : allPresets[0] || null;
             const mode  = ov.mode || pr?.travel_mode || tsCfg.default_travel_mode;
-            const jMins = ov.journeyMins ?? pr?.default_journey_mins ?? null;
+            const jMins = (ov.journeyMins > 0 ? ov.journeyMins : null) ?? pr?.default_journey_mins ?? null;
             const prep  = pr?.prep_buffer_mins  ?? tsCfg.prep_buffer_mins;
             const pre   = pr?.pre_event_buffer_mins ?? tsCfg.pre_event_buffer_mins;
             const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
