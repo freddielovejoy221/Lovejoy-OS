@@ -214,6 +214,44 @@ let _wxLocation = null;  // latest loaded weather_locations default row
 // ── WEATHER PERSISTENCE ───────────────────────────────────────
 const WX_STORE_KEY = 'ljos_wx_snap';
 
+// ── TRAVEL BUFFER ASSISTANT ───────────────────────────────────
+const DEFAULT_TRAVEL_SETTINGS = {
+  enabled:true, planning_window:'48h',
+  default_start_name:'Home', default_start_address:'',
+  default_travel_mode:'driving',
+  pre_event_buffer_mins:15, post_event_buffer_mins:10, prep_buffer_mins:10,
+  min_journey_mins:20, show_on_dashboard:true, include_in_helm:true, require_approval:true,
+};
+const TRAVEL_MODE_LABEL = {driving:'🚗 Driving',transit:'🚇 Public transport',walking:'🚶 Walking',cycling:'🚴 Cycling'};
+const TRAVEL_STORE_KEY  = 'ljos_travel_state'; // localStorage: {dismissed:[eventId,...], overrides:{eventId:{journeyMins,presetId,mode}}}
+
+function loadTravelState()  { try { return JSON.parse(localStorage.getItem(TRAVEL_STORE_KEY)||'{"dismissed":[],"overrides":{}}'); } catch(e) { return {dismissed:[],overrides:{}}; } }
+function saveTravelState(s) { try { localStorage.setItem(TRAVEL_STORE_KEY, JSON.stringify(s)); } catch(e) {} }
+
+function calcTravelTimes(eventStart, journeyMins, preBuffer, prepBuffer) {
+  const start = new Date(eventStart);
+  const leaveBy     = new Date(start.getTime() - (journeyMins + preBuffer) * 60000);
+  const getReady    = new Date(leaveBy.getTime() - prepBuffer * 60000);
+  const arrivalTarget = new Date(start.getTime() - preBuffer * 60000);
+  return { leaveBy, getReady, arrivalTarget };
+}
+
+function buildNavLinks(destination, origin, mode) {
+  const enc = encodeURIComponent;
+  const modeGm = {driving:'driving',transit:'transit',walking:'walking',cycling:'bicycling'}[mode]||'driving';
+  const google = `https://www.google.com/maps/dir/?api=1&destination=${enc(destination)}${origin?`&origin=${enc(origin)}`:''}&travelmode=${modeGm}`;
+  const waze   = `https://www.waze.com/ul?q=${enc(destination)}&navigate=yes`;
+  return { google, waze };
+}
+
+const DEFAULT_PRESETS = [
+  {name:'Work — driving',           travel_mode:'driving',  prep_buffer_mins:15, pre_event_buffer_mins:15, default_journey_mins:null, notes:'Allow for kit, parking, site arrival', sort_order:0},
+  {name:'Work with kit',            travel_mode:'driving',  prep_buffer_mins:30, pre_event_buffer_mins:20, default_journey_mins:null, notes:'Load kit, collect equipment, arrive ready to deliver', sort_order:1},
+  {name:'London social (transit)',  travel_mode:'transit',  prep_buffer_mins:20, pre_event_buffer_mins:10, default_journey_mins:null, notes:'Get to station, tap in, find venue', sort_order:2},
+  {name:'Light local trip',         travel_mode:'driving',  prep_buffer_mins:5,  pre_event_buffer_mins:5,  default_journey_mins:null, notes:'', sort_order:3},
+  {name:'Overnight / bag needed',   travel_mode:'driving',  prep_buffer_mins:45, pre_event_buffer_mins:15, default_journey_mins:null, notes:'Pack bag night before if possible', sort_order:4},
+];
+
 const getStaleMs = (ws) => {
   const s = ws?.stale_after || ws?.auto_refresh || '1h';
   if (s === '15m')   return 15 * 60000;
@@ -606,7 +644,7 @@ async function callHelm(type, extra = {}) {
         'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ type, weatherContext, ...extra }),
+      body: JSON.stringify({ type, weatherContext, travelContext: extra.travelContext || null, ...extra }),
     });
     return await res.json();
   } catch (e) {
@@ -2752,11 +2790,13 @@ const SYSTEM_REGISTRY = [
 
   // ── PLANNED ───────────────────────────────────────────────────
   {
-    id:'travel_buffer', name:'Travel Buffer Assistant', category:'Planned',
-    required:false, usesSecrets:true, accessType:'approval-gated',
-    description:'Estimates travel time via Google Maps Routes API and proposes buffer blocks before calendar events. Waze deep link for navigation. Priority: Next.',
-    settingsPage:null, plannedOnly:true,
-    getStatus:()=>({ status:'Planned', detail:'Queued — next planned integration after reliability sprint.' }),
+    id:'travel_buffer', name:'Travel Buffer Assistant', category:'Monitoring',
+    required:false, usesSecrets:false, accessType:'approval-gated',
+    description:'Reads calendar events with locations, calculates get-ready/leave-by times, provides Google Maps and Waze links, proposes travel blocks via approval flow. MVP: manual/default journey times only (no live routing yet).',
+    settingsPage:'travelsettings', plannedOnly:false,
+    getStatus:(h,flags)=>{
+      return { status:'Working', detail:'MVP active — manual/default journey estimates. Live routing not yet connected.' };
+    },
   },
   {
     id:'google_maps', name:'Google Maps Routes API', category:'Planned',
@@ -3484,6 +3524,432 @@ function ProposedActions({ changes, sourceRequest }) {
 }
 
 // ── HELM PAGE (Stages 1, 2) ───────────────────────────────────
+// ── TRAVEL SETTINGS PAGE ─────────────────────────────────────
+function TravelSettingsPage() {
+  const [ts,  setTs]  = useState(null);
+  const [presets, setPresets] = useState([]);
+  const [editPreset, setEditPreset] = useState(null); // null=list, {}=new, {..}=edit
+  const [saving, setSaving] = useState(false);
+  const [seeded, setSeeded] = useState(false);
+
+  useEffect(()=>{ load(); },[]);
+
+  const load = async () => {
+    const {data:{user}} = await supabase.auth.getUser();
+    if (!user) return;
+    const [tsRes, prRes] = await Promise.all([
+      supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
+      supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
+    ]);
+    const cfg = tsRes.data || {...DEFAULT_TRAVEL_SETTINGS};
+    setTs(cfg);
+    if (prRes.data && prRes.data.length > 0) {
+      setPresets(prRes.data);
+    } else if (!seeded) {
+      // Seed default presets on first load
+      setSeeded(true);
+      const seeds = DEFAULT_PRESETS.map(p=>({...p, user_id:user.id}));
+      const {data:ins} = await supabase.from('travel_presets').insert(seeds).select();
+      setPresets(ins||[]);
+    }
+  };
+
+  const persist = async (patch) => {
+    const merged = {...(ts||DEFAULT_TRAVEL_SETTINGS), ...patch};
+    setTs(merged);
+    const {data:{user}} = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase.from('travel_settings').upsert({...merged, user_id:user.id}).eq('user_id',user.id);
+  };
+
+  const savePreset = async () => {
+    if (!editPreset?.name) return;
+    setSaving(true);
+    const {data:{user}} = await supabase.auth.getUser();
+    if (editPreset.id) {
+      await supabase.from('travel_presets').update({
+        name:editPreset.name, travel_mode:editPreset.travel_mode,
+        prep_buffer_mins:+editPreset.prep_buffer_mins||15,
+        pre_event_buffer_mins:+editPreset.pre_event_buffer_mins||15,
+        post_event_buffer_mins:+editPreset.post_event_buffer_mins||10,
+        default_journey_mins:editPreset.default_journey_mins?+editPreset.default_journey_mins:null,
+        notes:editPreset.notes||null,
+      }).eq('id',editPreset.id);
+    } else {
+      await supabase.from('travel_presets').insert({
+        user_id:user.id, name:editPreset.name, travel_mode:editPreset.travel_mode||'driving',
+        prep_buffer_mins:+editPreset.prep_buffer_mins||15,
+        pre_event_buffer_mins:+editPreset.pre_event_buffer_mins||15,
+        post_event_buffer_mins:+editPreset.post_event_buffer_mins||10,
+        default_journey_mins:editPreset.default_journey_mins?+editPreset.default_journey_mins:null,
+        notes:editPreset.notes||null, sort_order:presets.length,
+      });
+    }
+    setSaving(false); setEditPreset(null); load();
+  };
+
+  const deletePreset = async (id) => {
+    await supabase.from('travel_presets').update({is_active:false}).eq('id',id);
+    setPresets(p=>p.filter(x=>x.id!==id));
+  };
+
+  if (!ts) return <div className="page"><div className="meta">Loading…</div></div>;
+
+  if (editPreset !== null) return (
+    <div className="page">
+      <h1 style={{fontSize:18,fontWeight:700,marginBottom:16}}>{editPreset.id?'Edit preset':'New preset'}</h1>
+      {[['name','Preset name','text'],['notes','Notes','text']].map(([k,l,t])=>(
+        <div key={k} style={{marginBottom:12}}>
+          <div style={{fontSize:13,marginBottom:4}}>{l}</div>
+          <input className="input" type={t} value={editPreset[k]||''} onChange={e=>setEditPreset(p=>({...p,[k]:e.target.value}))}/>
+        </div>
+      ))}
+      <div style={{marginBottom:12}}>
+        <div style={{fontSize:13,marginBottom:4}}>Travel mode</div>
+        <select className="input" value={editPreset.travel_mode||'driving'} onChange={e=>setEditPreset(p=>({...p,travel_mode:e.target.value}))}>
+          {Object.entries(TRAVEL_MODE_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+        </select>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+        {[['prep_buffer_mins','Prep buffer (min)'],['pre_event_buffer_mins','Pre-event buffer (min)'],
+          ['post_event_buffer_mins','Post-event buffer (min)'],['default_journey_mins','Default journey (min, optional)']].map(([k,l])=>(
+          <div key={k}>
+            <div style={{fontSize:12,marginBottom:4}}>{l}</div>
+            <input className="input" type="number" min="0" value={editPreset[k]??''} onChange={e=>setEditPreset(p=>({...p,[k]:e.target.value}))}/>
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{gap:8}}>
+        <button className="btn btn-primary" disabled={saving||!editPreset.name} onClick={savePreset}>{saving?'Saving…':'Save'}</button>
+        <button className="btn btn-ghost" onClick={()=>setEditPreset(null)}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:18,fontWeight:700,marginBottom:16}}>Travel Buffer Settings</h1>
+
+      <div className="card" style={{marginBottom:16}}>
+        <Toggle label="Enable Travel Buffer Assistant" val={ts.enabled} onChange={v=>persist({enabled:v})}/>
+        <Toggle label="Show suggestions on dashboard" val={ts.show_on_dashboard} onChange={v=>persist({show_on_dashboard:v})}/>
+        <Toggle label="Include travel context in Plan My Day" val={ts.include_in_helm} onChange={v=>persist({include_in_helm:v})}/>
+        <Toggle label="Require approval before creating calendar blocks" val={ts.require_approval} onChange={v=>persist({require_approval:v})}/>
+        <div style={{padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+          <div style={{fontSize:13,marginBottom:5}}>Planning window</div>
+          <select className="input" value={ts.planning_window||'48h'} onChange={e=>persist({planning_window:e.target.value})}>
+            <option value="today">Today only</option>
+            <option value="48h">Next 48 hours</option>
+            <option value="7d">Next 7 days</option>
+          </select>
+        </div>
+        <div style={{padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+          <div style={{fontSize:13,marginBottom:5}}>Default travel mode</div>
+          <select className="input" value={ts.default_travel_mode||'driving'} onChange={e=>persist({default_travel_mode:e.target.value})}>
+            {Object.entries(TRAVEL_MODE_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+        <div style={{padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+          <div style={{fontSize:13,marginBottom:5}}>Default start location name</div>
+          <input className="input" value={ts.default_start_name||''} onChange={e=>persist({default_start_name:e.target.value})} placeholder="e.g. Home"/>
+        </div>
+        <div style={{padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+          <div style={{fontSize:13,marginBottom:5}}>Default start address / postcode</div>
+          <input className="input" value={ts.default_start_address||''} onChange={e=>persist({default_start_address:e.target.value})} placeholder="e.g. KT6 5AA"/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,padding:'10px 0'}}>
+          {[['prep_buffer_mins','Prep buffer (min)'],['pre_event_buffer_mins','Pre-event buffer (min)'],
+            ['post_event_buffer_mins','Post-event buffer (min)'],['min_journey_mins','Min journey to flag (min)']].map(([k,l])=>(
+            <div key={k}>
+              <div style={{fontSize:12,marginBottom:4}}>{l}</div>
+              <input className="input" type="number" min="0" value={ts[k]??''} onChange={e=>persist({[k]:+e.target.value})}/>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="row-between" style={{marginBottom:8}}>
+        <div className="section-title" style={{margin:0}}>Trip presets</div>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setEditPreset({name:'',travel_mode:'driving',prep_buffer_mins:15,pre_event_buffer_mins:15,post_event_buffer_mins:10})}>+ Add</button>
+      </div>
+      {presets.map(p=>(
+        <div key={p.id} className="card-sm" style={{marginBottom:8}}>
+          <div className="row-between">
+            <div>
+              <div style={{fontSize:13,fontWeight:600}}>{p.name}</div>
+              <div className="meta">{TRAVEL_MODE_LABEL[p.travel_mode]||p.travel_mode} · Prep {p.prep_buffer_mins}m · Buffer {p.pre_event_buffer_mins}m{p.default_journey_mins?` · Journey ~${p.default_journey_mins}m`:''}</div>
+              {p.notes && <div className="meta" style={{fontSize:11,fontStyle:'italic'}}>{p.notes}</div>}
+            </div>
+            <div className="row" style={{gap:6}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setEditPreset({...p})}>Edit</button>
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={()=>deletePreset(p.id)}>×</button>
+            </div>
+          </div>
+        </div>
+      ))}
+      {presets.length===0 && <div className="meta">No presets yet. Add one above.</div>}
+    </div>
+  );
+}
+
+// ── TRAVEL PAGE ───────────────────────────────────────────────
+function TravelPage() {
+  const [ts,       setTs]       = useState(null);
+  const [presets,  setPresets]  = useState([]);
+  const [events,   setEvents]   = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [calError, setCalError] = useState(null);
+  const [editId,   setEditId]   = useState(null);
+  const [editVals, setEditVals] = useState({});
+  const [proposing,setProposing]= useState(null); // event id of pending block creation
+  const [pendingBlock,setPendingBlock] = useState(null); // built proposed action
+
+  useEffect(()=>{ load(); },[]);
+
+  const load = async () => {
+    setLoading(true);
+    const {data:{user}} = await supabase.auth.getUser();
+    const [tsRes, prRes] = await Promise.all([
+      supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle(),
+      supabase.from('travel_presets').select('*').eq('user_id',user.id).eq('is_active',true).order('sort_order'),
+    ]);
+    const cfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
+    setTs(cfg); setPresets(prRes.data||[]);
+    const days = cfg.planning_window==='today'?1:cfg.planning_window==='7d'?7:2;
+    const cal  = await fetchCalendarEvents(days);
+    if (cal?.error) { setCalError(cal.error); }
+    // Filter timed events with location
+    const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start && e.location);
+    setEvents(timed); setLoading(false);
+  };
+
+  const state = loadTravelState();
+
+  const getSuggestion = (e, preset, cfg) => {
+    const override = state.overrides[e.id] || {};
+    const pr    = override.presetId ? (presets.find(p=>p.id===override.presetId)||preset) : preset;
+    const mode  = override.mode || pr?.travel_mode || cfg.default_travel_mode;
+    const jMins = override.journeyMins ?? pr?.default_journey_mins ?? null;
+    const prep  = pr?.prep_buffer_mins  ?? cfg.prep_buffer_mins;
+    const pre   = pr?.pre_event_buffer_mins ?? cfg.pre_event_buffer_mins;
+    const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
+    const nav   = buildNavLinks(e.location, cfg.default_start_address||cfg.default_start_name, mode);
+    return { mode, jMins, prep, pre, times, nav, pr, override };
+  };
+
+  const defaultPreset = presets[0] || null;
+
+  const travelEvents = events.filter(e=>{
+    if (state.dismissed.includes(e.id)) return false;
+    const {jMins} = getSuggestion(e, defaultPreset, ts||DEFAULT_TRAVEL_SETTINGS);
+    if (jMins!=null && jMins < (ts?.min_journey_mins||20)) return false;
+    return true;
+  });
+
+  const dismiss = (id) => {
+    const s = loadTravelState();
+    s.dismissed = [...new Set([...s.dismissed, id])];
+    saveTravelState(s);
+    setEvents(ev=>ev.filter(e=>e.id!==id));
+  };
+
+  const saveOverride = (id) => {
+    const s = loadTravelState();
+    s.overrides[id] = { ...editVals };
+    saveTravelState(s);
+    setEditId(null); setEvents(ev=>[...ev]); // re-render
+  };
+
+  const proposeBlock = (e, sg, cfg) => {
+    const { times, mode, jMins, prep, pre, nav, pr } = sg;
+    if (!times) { alert('Enter a journey time estimate first (tap Edit).'); return; }
+    const startISO  = times.getReady;
+    const endISO    = new Date(e.start);
+    const fmtHHMM   = d => d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false});
+    const date      = startISO.toISOString().slice(0,10);
+    const title     = `Travel/prep for ${e.title}`;
+    const desc = [
+      `Original event: ${e.title}`,
+      `Destination: ${e.location}`,
+      `Start location: ${cfg.default_start_name||''}${cfg.default_start_address?` (${cfg.default_start_address})`:''}`,
+      `Travel mode: ${TRAVEL_MODE_LABEL[mode]||mode}`,
+      `Preset: ${pr?.name||'Default'}`,
+      `Estimated journey: ${jMins} min`,
+      `Prep buffer: ${prep} min`,
+      `Pre-event buffer: ${pre} min`,
+      `Get-ready: ${fmtHHMM(times.getReady)}`,
+      `Leave by: ${fmtHHMM(times.leaveBy)}`,
+      `Target arrival: ${fmtHHMM(times.arrivalTarget)}`,
+      `Confidence: ${jMins!=null?'Manual estimate':'Default'}`,
+      `Google Maps: ${nav.google}`,
+      `\nCreated by Lovejoy OS Travel Buffer Assistant`,
+    ].join('\n');
+    setPendingBlock({
+      type:'create_calendar_block',
+      title, date,
+      start_time: fmtHHMM(startISO),
+      end_time:   fmtHHMM(endISO),
+      description: desc,
+      block_type: 'travel',
+    });
+    setProposing(e.id);
+  };
+
+  const approvePendingBlock = async () => {
+    if (!pendingBlock) return;
+    const r = await applyProposedAction('create_calendar_block', pendingBlock);
+    await logProposal({
+      action_type:'create_calendar_block',
+      explanation:`Travel/prep block for event`,
+      payload: pendingBlock,
+      status: r.ok ? 'approved' : 'failed',
+      result_note: r.note || (r.ok?'Created':'Failed'),
+    });
+    setPendingBlock(null); setProposing(null);
+    if (r.ok) alert('Travel block created in your Lovejoy OS calendar ✓');
+    else alert('Could not create block: '+(r.note||'unknown error'));
+  };
+
+  if (loading) return <div className="page"><div className="meta">Loading travel suggestions…</div></div>;
+  if (!ts?.enabled) return (
+    <div className="page">
+      <h1 style={{fontSize:18,fontWeight:700,marginBottom:12}}>Travel Buffer</h1>
+      <div className="meta">Travel Buffer Assistant is disabled. Enable it in Travel Settings.</div>
+    </div>
+  );
+
+  const fmtT = d => d ? new Date(d).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+  const fmtDT = d => d ? new Date(d).toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+
+  return (
+    <div className="page">
+      <div className="row-between" style={{marginBottom:4}}>
+        <h1 style={{fontSize:18,fontWeight:700,margin:0}}>Travel Buffer</h1>
+        <button className="btn btn-ghost btn-sm" onClick={load}>↻</button>
+      </div>
+      <div className="meta" style={{marginBottom:16}}>
+        {ts.planning_window==='today'?'Today only':ts.planning_window==='7d'?'Next 7 days':'Next 48 hours'} · From: {ts.default_start_name||'Home'}
+        {calError && <span style={{color:'var(--red)'}}> · Calendar error</span>}
+      </div>
+
+      {travelEvents.length===0 && (
+        <div className="empty">
+          <div className="empty-icon">🗺️</div>
+          <div>No travel events found</div>
+          <div className="meta">Timed calendar events with a location will appear here.</div>
+        </div>
+      )}
+
+      {travelEvents.map(e=>{
+        const cfg = ts||DEFAULT_TRAVEL_SETTINGS;
+        const sg  = getSuggestion(e, defaultPreset, cfg);
+        const { times, mode, jMins, prep, pre, nav, pr } = sg;
+        const isEditing  = editId===e.id;
+        const isProposing = proposing===e.id;
+
+        return (
+          <div key={e.id} className="card" style={{marginBottom:12}}>
+            <div className="row-between" style={{marginBottom:6}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600}}>{e.title}</div>
+                <div className="meta">{fmtDT(e.start)}</div>
+                <div className="meta">📍 {e.location}</div>
+              </div>
+              <div style={{flexShrink:0,fontSize:11,color:'var(--muted)',textAlign:'right'}}>
+                <div>{TRAVEL_MODE_LABEL[mode]||mode}</div>
+                <div>{pr?.name||'Default'}</div>
+              </div>
+            </div>
+
+            {/* Time breakdown */}
+            {times ? (
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4,marginBottom:10,background:'var(--surface2)',borderRadius:6,padding:'8px 10px'}}>
+                {[['🎒 Get ready', fmtT(times.getReady)],['🚗 Leave by', fmtT(times.leaveBy)],['📍 Arrive by', fmtT(times.arrivalTarget)]].map(([l,v])=>(
+                  <div key={l} style={{textAlign:'center'}}>
+                    <div style={{fontSize:10,color:'var(--muted)'}}>{l}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:'var(--accent)'}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'7px 10px',marginBottom:10,fontSize:12}}>
+                ⚠ No journey estimate. Tap Edit to enter one.
+              </div>
+            )}
+
+            {/* Confidence / summary */}
+            <div className="meta" style={{marginBottom:8}}>
+              Journey: {jMins!=null?`~${jMins} min (manual)`:'unknown'} · Prep: {prep}m · Buffer: {pre}m
+            </div>
+
+            {/* Edit panel */}
+            {isEditing && (
+              <div style={{background:'var(--surface2)',borderRadius:6,padding:10,marginBottom:10}}>
+                <div style={{fontSize:12,marginBottom:8}}>Override for this event</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+                  <div>
+                    <div style={{fontSize:11,marginBottom:3}}>Journey time (min)</div>
+                    <input className="input" type="number" min="0" placeholder="e.g. 55"
+                      value={editVals.journeyMins??''} onChange={e2=>setEditVals(v=>({...v,journeyMins:+e2.target.value}))}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,marginBottom:3}}>Travel mode</div>
+                    <select className="input" value={editVals.mode||mode} onChange={e2=>setEditVals(v=>({...v,mode:e2.target.value}))}>
+                      {Object.entries(TRAVEL_MODE_LABEL).map(([vv,ll])=><option key={vv} value={vv}>{ll}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,marginBottom:3}}>Trip preset</div>
+                  <select className="input" value={editVals.presetId||''} onChange={e2=>setEditVals(v=>({...v,presetId:e2.target.value}))}>
+                    <option value="">Default settings</option>
+                    {presets.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="row" style={{gap:6}}>
+                  <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id)}>Save</button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(null);setEditVals({});}}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Propose block confirmation */}
+            {isProposing && pendingBlock && (
+              <div style={{background:'rgba(79,124,255,0.06)',border:'1px solid rgba(79,124,255,0.2)',borderRadius:6,padding:10,marginBottom:10,fontSize:12}}>
+                <div style={{fontWeight:600,marginBottom:4}}>Create block: "{pendingBlock.title}"</div>
+                <div className="meta">{pendingBlock.date} {pendingBlock.start_time}–{pendingBlock.end_time} · In Lovejoy OS calendar only</div>
+                <div className="row" style={{gap:6,marginTop:8}}>
+                  <button className="btn btn-primary btn-sm" onClick={approvePendingBlock}>Approve</button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>{setProposing(null);setPendingBlock(null);}}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+              <a href={nav.google} target="_blank" rel="noopener" className="btn btn-ghost btn-sm">🗺 Maps</a>
+              <a href={nav.waze}   target="_blank" rel="noopener" className="btn btn-ghost btn-sm">Waze</a>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(isEditing?null:e.id);setEditVals(state.overrides[e.id]||{});}}>
+                {isEditing?'Cancel edit':'Edit'}
+              </button>
+              {!isProposing && (
+                <button className="btn btn-ghost btn-sm" onClick={()=>proposeBlock(e, sg, cfg)}>+ Travel block</button>
+              )}
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={()=>dismiss(e.id)}>Dismiss</button>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{marginTop:16,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+        <div className="meta">
+          Navigation links use Google Maps and Waze. No API key required. Live traffic not yet included.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── SOURCE SUMMARY ────────────────────────────────────────────
 // Renders what data Helm used when generating a brief.
 // compact=true → single line for dashboard card
@@ -4317,7 +4783,43 @@ function DashboardPage({ user, onNavigate }) {
   // Explicit Helm calls only — on button press
   const runPlanMyDay = async () => {
     setBriefBusy(true);
-    await callHelm('plan_my_day');           // generates + stores brief in reviews
+    // Build lightweight travel context for Helm (if travel enabled & include_in_helm)
+    let travelContext = null;
+    try {
+      const {data:{user}} = await supabase.auth.getUser();
+      const tsRes = await supabase.from('travel_settings').select('*').eq('user_id',user.id).maybeSingle();
+      const tsCfg = tsRes.data || DEFAULT_TRAVEL_SETTINGS;
+      if (tsCfg.enabled && tsCfg.include_in_helm) {
+        const cal = await fetchCalendarEvents(2);
+        const tstate = loadTravelState();
+        const events = (cal?.events||[]).filter(e=>!e.allDay && e.start && e.location && !tstate.dismissed.includes(e.id));
+        if (events.length > 0) {
+          travelContext = {
+            planning_window:'48h',
+            start_location: tsCfg.default_start_name || 'Home',
+            suggestions: events.slice(0,8).map(e=>{
+              const ov = tstate.overrides[e.id]||{};
+              const jMins = ov.journeyMins ?? null;
+              const prep  = tsCfg.prep_buffer_mins;
+              const pre   = tsCfg.pre_event_buffer_mins;
+              const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
+              return {
+                event_title: e.title,
+                event_start: e.start,
+                event_location: e.location,
+                travel_mode: ov.mode || tsCfg.default_travel_mode,
+                journey_mins: jMins,
+                confidence: jMins!=null ? 'manual' : 'unknown',
+                get_ready: times ? times.getReady.toISOString() : null,
+                leave_by:  times ? times.leaveBy.toISOString()  : null,
+                arrival_target: times ? times.arrivalTarget.toISOString() : null,
+              };
+            }),
+          };
+        }
+      }
+    } catch(e) { /* travel context is optional — don't block Helm */ }
+    await callHelm('plan_my_day', { travelContext });
     const b = await fetchTodaysBrief();
     setBrief(b); setBriefBusy(false);
   };
@@ -4519,18 +5021,20 @@ function App() {
   ];
 
   const moreItems = [
-    { id:'helm',          label:ASSISTANT_NAME,              icon:'zap' },
-    { id:'helmsettings',  label:ASSISTANT_NAME+' Settings',  icon:'box' },
+    { id:'helm',           label:ASSISTANT_NAME,              icon:'zap' },
+    { id:'helmsettings',   label:ASSISTANT_NAME+' Settings',  icon:'box' },
+    { id:'travel',         label:'Travel Buffer',             icon:'clock' },
+    { id:'travelsettings', label:'Travel Settings',           icon:'box' },
     { id:'weathersettings',label:'Weather & Outdoor',         icon:'alert' },
-    { id:'calendar',      label:'Calendar',                   icon:'clock' },
-    { id:'projects',      label:'Projects',                   icon:'folder' },
-    { id:'areas',         label:'Areas & Roles',              icon:'layers' },
-    { id:'decisions',     label:'Decisions & Assets',         icon:'box' },
-    { id:'reviews',       label:'Weekly Review',              icon:'clock' },
-    { id:'roadmap',       label:'Roadmap Queue',              icon:'alert' },
-    { id:'systemhealth',  label:'System Health',              icon:'alert' },
-    { id:'features',      label:'Features Guide',             icon:'alert' },
-    { id:'debug',         label:'Debug Log',                  icon:'alert' },
+    { id:'calendar',       label:'Calendar',                  icon:'clock' },
+    { id:'projects',       label:'Projects',                  icon:'folder' },
+    { id:'areas',          label:'Areas & Roles',             icon:'layers' },
+    { id:'decisions',      label:'Decisions & Assets',        icon:'box' },
+    { id:'reviews',        label:'Weekly Review',             icon:'clock' },
+    { id:'roadmap',        label:'Roadmap Queue',             icon:'alert' },
+    { id:'systemhealth',   label:'System Health',             icon:'alert' },
+    { id:'features',       label:'Features Guide',            icon:'alert' },
+    { id:'debug',          label:'Debug Log',                 icon:'alert' },
   ];
 
   const renderPage = () => {
@@ -4545,7 +5049,9 @@ function App() {
     if (page==='areas')           return <AreasPage/>;
     if (page==='decisions')       return <DecisionsAssetsPage/>;
     if (page==='reviews')         return <ReviewsPage/>;
-    if (page==='roadmap')         return <RoadmapQueuePage/>;
+    if (page==='travel')         return <TravelPage/>;
+    if (page==='travelsettings') return <TravelSettingsPage/>;
+    if (page==='roadmap')        return <RoadmapQueuePage/>;
     if (page==='systemhealth')    return <SystemHealthPage onNavigate={setPage}/>;
     if (page==='features')        return <FeaturesWikiPage/>;
     if (page==='debug')           return <DebugPage/>;
@@ -4578,7 +5084,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
