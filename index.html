@@ -255,15 +255,23 @@ const GAP_LABEL  = {comfortable:'Comfortable',manageable:'Manageable',tight:'Tig
 async function upsertTravelOverrideDB(userId, eventId, eventMeta, override) {
   if (!userId) return;
   try {
-    await supabase.from('travel_event_overrides').upsert({
-      user_id:userId, source_event_id:eventId,
-      source_event_start:eventMeta?.start||null, source_event_title:eventMeta?.title||null,
-      source_event_location:eventMeta?.location||null,
-      journey_time_minutes:override.journeyMins||null, travel_mode:override.mode||null,
-      preset_id:override.presetId||null, custom_start_location:override.startLocationCustom||null,
-      dismissed:override.dismissed||false, updated_at:new Date().toISOString(),
-    },{onConflict:'user_id,source_event_id'});
-  } catch(e){}
+    // Delete then insert — same reliable pattern as syncChecklistDB
+    await supabase.from('travel_event_overrides')
+      .delete().eq('user_id', userId).eq('source_event_id', eventId);
+    await supabase.from('travel_event_overrides').insert({
+      user_id:              userId,
+      source_event_id:      eventId,
+      source_event_start:   eventMeta?.start   || null,
+      source_event_title:   eventMeta?.title   || null,
+      source_event_location:eventMeta?.location|| null,
+      journey_time_minutes: override.journeyMins > 0 ? override.journeyMins : null,
+      travel_mode:          override.mode      || null,
+      preset_id:            override.presetId  || null,
+      custom_start_location:override.startLocationCustom || null,
+      dismissed:            override.dismissed  || false,
+      updated_at:           new Date().toISOString(),
+    });
+  } catch(e) { console.warn('travel override save failed', e); }
 }
 
 async function checkTravelBlockDB(userId, eventId) {
@@ -278,14 +286,21 @@ async function checkTravelBlockDB(userId, eventId) {
 async function upsertTravelBlockDB(userId, eventId, block) {
   if (!userId) return;
   try {
-    await supabase.from('travel_created_blocks').upsert({
-      user_id:userId, source_event_id:eventId,
-      source_event_start:block.source_event_start||null, source_event_title:block.source_event_title||null,
-      travel_idempotency_key:block.ikey||null, status:'created',
-      block_title:block.title||null, block_date:block.date||null,
-      block_start_time:block.start_time||null, updated_at:new Date().toISOString(),
-    },{onConflict:'user_id,source_event_id'});
-  } catch(e){}
+    await supabase.from('travel_created_blocks')
+      .delete().eq('user_id', userId).eq('source_event_id', eventId);
+    await supabase.from('travel_created_blocks').insert({
+      user_id:                userId,
+      source_event_id:        eventId,
+      source_event_start:     block.source_event_start  || null,
+      source_event_title:     block.source_event_title  || null,
+      travel_idempotency_key: block.ikey                || null,
+      status:                 'created',
+      block_title:            block.title               || null,
+      block_date:             block.date                || null,
+      block_start_time:       block.start_time          || null,
+      updated_at:             new Date().toISOString(),
+    });
+  } catch(e) { console.warn('travel block save failed', e); }
 }
 
 async function syncChecklistDB(userId, eventId, cl) {
@@ -4352,18 +4367,11 @@ function TravelPage() {
     setTs(cfg); setPresets(prRes.data||[]); setPrepItems(piRes.data||[]);
     setUserId(user.id);
 
-    // Travel persistence tables — isolated so missing tables don't block load
+    // Travel persistence tables — each isolated so one failure can't block the others
     let ovRows = [], blkRows = [], clRows = [];
-    try {
-      const [ovRes, blkRes, clRes] = await Promise.all([
-        supabase.from('travel_event_overrides').select('*').eq('user_id',user.id),
-        supabase.from('travel_created_blocks').select('*').eq('user_id',user.id),
-        supabase.from('travel_checklist_items').select('*').eq('user_id',user.id).order('sort_order'),
-      ]);
-      ovRows  = ovRes.data  || [];
-      blkRows = blkRes.data || [];
-      clRows  = clRes.data  || [];
-    } catch(e) { /* SQL not yet run — fall back to localStorage */ }
+    try { const r = await supabase.from('travel_event_overrides').select('*').eq('user_id',user.id); ovRows = r.data||[]; } catch(e) {}
+    try { const r = await supabase.from('travel_created_blocks').select('*').eq('user_id',user.id); blkRows = r.data||[]; } catch(e) {}
+    try { const r = await supabase.from('travel_checklist_items').select('*').eq('user_id',user.id).order('sort_order'); clRows = r.data||[]; } catch(e) {}
 
     // Merge DB state into localStorage (DB wins per-event)
     const local = loadTravelState();
