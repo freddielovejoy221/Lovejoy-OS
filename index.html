@@ -3714,8 +3714,13 @@ function TravelPage() {
   const [calError, setCalError] = useState(null);
   const [editId,   setEditId]   = useState(null);
   const [editVals, setEditVals] = useState({});
-  const [proposing,setProposing]= useState(null); // event id of pending block creation
-  const [pendingBlock,setPendingBlock] = useState(null); // built proposed action
+  const [proposing,setProposing]= useState(null);
+  const [pendingBlock,setPendingBlock] = useState(null);
+  const [submitting, setSubmitting]   = useState(false); // prevents double-approve
+
+  // Stable fingerprint for duplicate detection — survives page reload via localStorage
+  const travelIKey = (e, startTime, endTime) =>
+    [e.id||'', (e.start||'').slice(0,16), (e.location||'').slice(0,30), startTime, endTime].join('|');
 
   useEffect(()=>{ load(); },[]);
 
@@ -3781,6 +3786,15 @@ function TravelPage() {
     const fmtHHMM   = d => d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false});
     const date      = startISO.toISOString().slice(0,10);
     const title     = `Travel/prep for ${e.title}`;
+    const ikey      = travelIKey(e, fmtHHMM(startISO), fmtHHMM(endISO));
+
+    // Idempotency check — prevent duplicate before even showing the confirm panel
+    const tstate = loadTravelState();
+    if (tstate.createdBlocks?.[e.id]) {
+      alert('A travel block already exists for this event. Check your Lovejoy OS calendar.');
+      return;
+    }
+
     const desc = [
       `Original event: ${e.title}`,
       `Destination: ${e.location}`,
@@ -3795,6 +3809,7 @@ function TravelPage() {
       `Target arrival: ${fmtHHMM(times.arrivalTarget)}`,
       `Confidence: ${jMins!=null?'Manual estimate':'Default'}`,
       `Google Maps: ${nav.google}`,
+      `Idempotency key: ${ikey}`,
       `\nCreated by Lovejoy OS Travel Buffer Assistant`,
     ].join('\n');
     setPendingBlock({
@@ -3804,23 +3819,66 @@ function TravelPage() {
       end_time:   fmtHHMM(endISO),
       description: desc,
       block_type: 'travel',
+      // Idempotency metadata
+      ikey,
+      source_event_id:    e.id,
+      source_event_title: e.title,
+      source_event_start: e.start,
     });
     setProposing(e.id);
   };
 
   const approvePendingBlock = async () => {
-    if (!pendingBlock) return;
+    if (!pendingBlock || submitting) return; // guard: disable during submission
+    const eId = pendingBlock.source_event_id;
+
+    // Second idempotency check at approve time (protects rapid double-click on Approve)
+    const tstate = loadTravelState();
+    if (eId && tstate.createdBlocks?.[eId]) {
+      setPendingBlock(null); setProposing(null);
+      alert('Travel block already exists for this event — not creating another.');
+      return;
+    }
+
+    setSubmitting(true); // disable Approve button immediately
     const r = await applyProposedAction('create_calendar_block', pendingBlock);
+    const {data:{user}} = await supabase.auth.getUser();
+
     await logProposal({
       action_type:'create_calendar_block',
-      explanation:`Travel/prep block for event`,
+      explanation: r.ok
+        ? 'Travel block created: ' + (pendingBlock.source_event_title||pendingBlock.title)
+        : 'Travel block failed: ' + (pendingBlock.source_event_title||pendingBlock.title),
       payload: pendingBlock,
       status: r.ok ? 'approved' : 'failed',
       result_note: r.note || (r.ok?'Created':'Failed'),
     });
-    setPendingBlock(null); setProposing(null);
-    if (r.ok) alert('Travel block created in your Lovejoy OS calendar ✓');
-    else alert('Could not create block: '+(r.note||'unknown error'));
+
+    if (r.ok) {
+      // Persist to localStorage so this event shows as "already created" after page refresh
+      const s2 = loadTravelState();
+      if (!s2.createdBlocks) s2.createdBlocks = {};
+      s2.createdBlocks[eId] = {
+        ikey: pendingBlock.ikey, title: pendingBlock.title,
+        date: pendingBlock.date, created_at: new Date().toISOString(),
+      };
+      saveTravelState(s2);
+      // Debug Log entry
+      if (user) supabase.from('helm_logs').insert({
+        user_id:user.id, function_name:'travel_buffer', action:'block_created', status:'success',
+        meta:{ event_id:eId, event_title:pendingBlock.source_event_title, ikey:pendingBlock.ikey },
+      }).then(()=>{}).catch(()=>{});
+    } else {
+      // Debug Log failure
+      if (user) supabase.from('helm_logs').insert({
+        user_id:user.id, function_name:'travel_buffer', action:'block_creation_failed', status:'error',
+        error_code:'calendar_block_failed', error_detail:r.note||'unknown',
+        meta:{ event_id:eId, ikey:pendingBlock.ikey },
+      }).then(()=>{}).catch(()=>{});
+    }
+
+    setSubmitting(false); setPendingBlock(null); setProposing(null);
+    if (!r.ok) alert('Could not create block: '+(r.note||'unknown error'));
   };
 
   if (loading) return <div className="page"><div className="meta">Loading travel suggestions…</div></div>;
@@ -3926,14 +3984,15 @@ function TravelPage() {
               </div>
             )}
 
-            {/* Propose block confirmation */}
             {isProposing && pendingBlock && (
               <div style={{background:'rgba(79,124,255,0.06)',border:'1px solid rgba(79,124,255,0.2)',borderRadius:6,padding:10,marginBottom:10,fontSize:12}}>
                 <div style={{fontWeight:600,marginBottom:4}}>Create block: "{pendingBlock.title}"</div>
                 <div className="meta">{pendingBlock.date} {pendingBlock.start_time}–{pendingBlock.end_time} · In Lovejoy OS calendar only</div>
                 <div className="row" style={{gap:6,marginTop:8}}>
-                  <button className="btn btn-primary btn-sm" onClick={approvePendingBlock}>Approve</button>
-                  <button className="btn btn-ghost btn-sm" onClick={()=>{setProposing(null);setPendingBlock(null);}}>Cancel</button>
+                  <button className="btn btn-primary btn-sm" disabled={submitting} onClick={approvePendingBlock}>
+                    {submitting ? 'Creating…' : 'Approve'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" disabled={submitting} onClick={()=>{setProposing(null);setPendingBlock(null);}}>Cancel</button>
                 </div>
               </div>
             )}
@@ -3945,9 +4004,11 @@ function TravelPage() {
               <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(isEditing?null:e.id);setEditVals(state.overrides[e.id]||{});}}>
                 {isEditing?'Cancel edit':'Edit'}
               </button>
-              {!isProposing && (
+              {state.createdBlocks?.[e.id] ? (
+                <span style={{fontSize:11,padding:'4px 8px',color:'var(--accent)',border:'1px solid var(--accent)',borderRadius:4}}>✓ Block added</span>
+              ) : !isProposing ? (
                 <button className="btn btn-ghost btn-sm" onClick={()=>proposeBlock(e, sg, cfg)}>+ Travel block</button>
-              )}
+              ) : null}
               <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={()=>dismiss(e.id)}>Dismiss</button>
             </div>
           </div>
@@ -3957,6 +4018,9 @@ function TravelPage() {
       <div style={{marginTop:16,paddingTop:12,borderTop:'1px solid var(--border)'}}>
         <div className="meta">
           Navigation links use Google Maps and Waze. No API key required. Live traffic not yet included.
+        </div>
+        <div className="meta" style={{marginTop:6,color:'var(--amber)'}}>
+          If you have duplicate travel blocks from a previous session, open Google Calendar → find the duplicates in your Lovejoy OS calendar → delete the extras manually. Auto-deletion is not supported without approval.
         </div>
       </div>
     </div>
