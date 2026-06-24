@@ -245,6 +245,74 @@ function buildNavLinks(destination, origin, mode) {
   return { google, waze };
 }
 
+// ── TRAVEL BUFFER v2 HELPERS ──────────────────────────────────
+const GAP_COLOUR = {comfortable:'var(--accent)',manageable:'var(--text)',tight:'var(--amber)',overloaded:'var(--red)',unknown:'var(--muted)'};
+const GAP_LABEL  = {comfortable:'Comfortable',manageable:'Manageable',tight:'Tight ⚠',overloaded:'Overloaded ⚠⚠',unknown:'Unknown'};
+
+// Determine likely start location from the previous event in the window
+function calcStartLocation(event, allTimedEvents, defaultName, defaultAddress) {
+  const eStart = new Date(event.start);
+  const prev = [...(allTimedEvents||[])]
+    .filter(ev => ev.id!==event.id && ev.location && !ev.allDay && new Date(ev.start) < eStart)
+    .sort((a,b) => new Date(b.start) - new Date(a.start))[0];
+  if (prev) {
+    const prevEnd = prev.end ? new Date(prev.end) : new Date(new Date(prev.start).getTime() + 3600000);
+    const gapMins = Math.round((eStart - prevEnd) / 60000);
+    if (gapMins >= 0 && gapMins < 180) {
+      return { name: prev.location, address: prev.location, source:'previous_event',
+               prevTitle: prev.title, prevEnd: prevEnd.toISOString(), gapFromPrev: gapMins };
+    }
+  }
+  return { name: defaultName||'Home', address: defaultAddress||'', source:'default' };
+}
+
+// Gap label between get-ready time and end of previous event
+function calcGapLabel(getReadyTime, prevEventEnd) {
+  if (!getReadyTime || !prevEventEnd) return 'unknown';
+  const bufMins = (new Date(getReadyTime) - new Date(prevEventEnd)) / 60000;
+  if (bufMins < 0)  return 'overloaded';
+  if (bufMins < 15) return 'tight';
+  if (bufMins < 45) return 'manageable';
+  return 'comfortable';
+}
+
+// Travel pressure score for a set of suggestions (works with both TravelPage and runPlanMyDay objects)
+function calcTravelPressure(suggestions) {
+  let score = 0;
+  suggestions.forEach(s => {
+    const mins = s.jMins ?? s.journey_mins;
+    const gap  = s.gapLabel ?? s.gap_label;
+    const p    = s.profile || {};
+    if (mins == null) score += 1;
+    else if (mins > 60) score += 2;
+    else if (mins > 30) score += 1;
+    if (gap==='tight')     score += 2;
+    if (gap==='overloaded') score += 3;
+    if (p.kit_level==='kit-heavy' || s.kit_level==='kit-heavy') score += 2;
+    if (p.requires_overnight || s.requires_overnight) score += 2;
+    if (p.requires_laptop    || s.requires_laptop)    score += 1;
+    if ((s.startLoc||s.start_location_source)==='previous_event') score += 1;
+  });
+  if (score >= 8) return 'overloaded';
+  if (score >= 5) return 'tight';
+  if (score >= 2) return 'moderate';
+  return 'low';
+}
+
+// Prep suggestions from travel profile
+function calcPrepSuggestions(profile) {
+  if (!profile) return [];
+  const out = [];
+  if (profile.kit_level==='kit-heavy')    out.push('Pack kit and load the car');
+  if (profile.requires_laptop)            out.push('Pack laptop/work bag and charger');
+  if (profile.requires_overnight)         out.push('Pack overnight bag');
+  if (profile.requires_smart_clothes)     out.push('Set out smart clothes tonight');
+  if (profile.requires_food_water)        out.push('Fill water bottle and pack food');
+  if (profile.needs_parking)              out.push('Check parking options in advance');
+  if (profile.check_weather)              out.push('Check weather forecast before leaving');
+  return out;
+}
+
 const DEFAULT_PRESETS = [
   {name:'Work — driving',           travel_mode:'driving',  prep_buffer_mins:15, pre_event_buffer_mins:15, default_journey_mins:null, notes:'Allow for kit, parking, site arrival', sort_order:0},
   {name:'Work with kit',            travel_mode:'driving',  prep_buffer_mins:30, pre_event_buffer_mins:20, default_journey_mins:null, notes:'Load kit, collect equipment, arrive ready to deliver', sort_order:1},
@@ -3904,7 +3972,7 @@ function TravelPage() {
 
   const state = loadTravelState();
 
-  const getSuggestion = (e, preset, cfg) => {
+  const getSuggestion = (e, preset, cfg, allTimedEvents) => {
     const override = state.overrides[e.id] || {};
     const pr    = override.presetId ? (presets.find(p=>p.id===override.presetId)||preset) : preset;
     const mode  = override.mode || pr?.travel_mode || cfg.default_travel_mode;
@@ -3912,18 +3980,45 @@ function TravelPage() {
     const prep  = pr?.prep_buffer_mins  ?? cfg.prep_buffer_mins;
     const pre   = pr?.pre_event_buffer_mins ?? cfg.pre_event_buffer_mins;
     const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
-    const nav   = buildNavLinks(e.location, cfg.default_start_address||cfg.default_start_name, mode);
-    return { mode, jMins, prep, pre, times, nav, pr, override };
+
+    // v2: start location intelligence
+    const startLoc = override.startLocationCustom
+      ? {...override.startLocationCustom, source:'custom'}
+      : calcStartLocation(e, allTimedEvents||[], cfg.default_start_name, cfg.default_start_address);
+
+    const nav = buildNavLinks(e.location, startLoc.address||startLoc.name, mode);
+
+    // v2: gap label from previous event end
+    const prevEvent = [...(allTimedEvents||[])]
+      .filter(ev => ev.id!==e.id && !ev.allDay && new Date(ev.start) < new Date(e.start))
+      .sort((a,b) => new Date(b.start) - new Date(a.start))[0];
+    const prevEnd = prevEvent?.end || (prevEvent ? new Date(new Date(prevEvent.start).getTime()+3600000).toISOString() : null);
+    const gapLabel = calcGapLabel(times?.getReady, prevEnd);
+
+    // v2: profile and prep
+    const profile  = override.profile || {};
+    const prepItems = calcPrepSuggestions(profile);
+
+    return { mode, jMins, prep, pre, times, nav, pr, override, startLoc, gapLabel, profile, prepItems };
   };
 
   const defaultPreset = presets[0] || null;
 
   const travelEvents = events.filter(e=>{
     if (state.dismissed.includes(e.id)) return false;
-    const {jMins} = getSuggestion(e, defaultPreset, ts||DEFAULT_TRAVEL_SETTINGS);
+    const {jMins} = getSuggestion(e, defaultPreset, ts||DEFAULT_TRAVEL_SETTINGS, events);
     if (jMins!=null && jMins < (ts?.min_journey_mins||20)) return false;
     return true;
   });
+
+  // v2: pre-compute all suggestions for pressure calculation
+  const cfg0 = ts||DEFAULT_TRAVEL_SETTINGS;
+  const allSugs = travelEvents.map(e => ({...getSuggestion(e, defaultPreset, cfg0, events), _eventStart: e.start}));
+  const todayStr    = new Date().toISOString().slice(0,10);
+  const tomorrowStr = new Date(Date.now()+86400000).toISOString().slice(0,10);
+  const todayP    = calcTravelPressure(allSugs.filter(s=>s._eventStart?.slice(0,10)===todayStr));
+  const tomorrowP = calcTravelPressure(allSugs.filter(s=>s._eventStart?.slice(0,10)===tomorrowStr));
+  const pColour   = p => p==='overloaded'?'var(--red)':p==='tight'?'var(--amber)':p==='moderate'?'var(--text)':'var(--muted)';
 
   const dismiss = (id) => {
     const s = loadTravelState();
@@ -4064,6 +4159,23 @@ function TravelPage() {
         {calError && <span style={{color:'var(--red)'}}> · Calendar error</span>}
       </div>
 
+      {/* Travel pressure summary */}
+      {allSugs.length > 0 && (
+        <div className="card" style={{marginBottom:12,padding:'10px 12px'}}>
+          <div style={{fontSize:11,fontWeight:600,marginBottom:6}}>Travel pressure</div>
+          <div className="row" style={{gap:20}}>
+            {todayP && <div style={{textAlign:'center'}}>
+              <div style={{fontSize:9,color:'var(--muted)',marginBottom:2}}>TODAY</div>
+              <div style={{fontWeight:700,fontSize:13,color:pColour(todayP)}}>{todayP.charAt(0).toUpperCase()+todayP.slice(1)}</div>
+            </div>}
+            {tomorrowP && <div style={{textAlign:'center'}}>
+              <div style={{fontSize:9,color:'var(--muted)',marginBottom:2}}>TOMORROW</div>
+              <div style={{fontWeight:700,fontSize:13,color:pColour(tomorrowP)}}>{tomorrowP.charAt(0).toUpperCase()+tomorrowP.slice(1)}</div>
+            </div>}
+          </div>
+        </div>
+      )}
+
       {travelEvents.length===0 && (
         <div className="empty">
           <div className="empty-icon">🗺️</div>
@@ -4074,8 +4186,8 @@ function TravelPage() {
 
       {travelEvents.map(e=>{
         const cfg = ts||DEFAULT_TRAVEL_SETTINGS;
-        const sg  = getSuggestion(e, defaultPreset, cfg);
-        const { times, mode, jMins, prep, pre, nav, pr } = sg;
+        const sg  = getSuggestion(e, defaultPreset, cfg, events);
+        const { times, mode, jMins, prep, pre, nav, pr, startLoc, gapLabel, profile, prepItems } = sg;
         const isEditing  = editId===e.id;
         const isProposing = proposing===e.id;
 
@@ -4086,16 +4198,30 @@ function TravelPage() {
                 <div style={{fontSize:13,fontWeight:600}}>{e.title}</div>
                 <div className="meta">{fmtDT(e.start)}</div>
                 <div className="meta">📍 {e.location}</div>
+                {/* v2: start location */}
+                <div style={{fontSize:10,color: startLoc.source==='previous_event'?'var(--accent)':'var(--muted)',marginTop:2}}>
+                  {startLoc.source==='previous_event'
+                    ? '↩ From: ' + startLoc.name + ' (' + startLoc.prevTitle + ' +' + startLoc.gapFromPrev + 'm)'
+                    : startLoc.source==='custom'
+                      ? '📌 From: ' + startLoc.name
+                      : '🏠 From: ' + startLoc.name}
+                </div>
               </div>
-              <div style={{flexShrink:0,fontSize:11,color:'var(--muted)',textAlign:'right'}}>
-                <div>{TRAVEL_MODE_LABEL[mode]||mode}</div>
-                <div>{pr?.name||'Default'}</div>
+              <div style={{flexShrink:0,textAlign:'right'}}>
+                <div style={{fontSize:11,color:'var(--muted)'}}>{TRAVEL_MODE_LABEL[mode]||mode}</div>
+                <div style={{fontSize:11,color:'var(--muted)'}}>{pr?.name||'Default'}</div>
+                {/* v2: gap badge */}
+                {gapLabel && gapLabel!=='comfortable' && gapLabel!=='unknown' && (
+                  <div style={{fontSize:9,fontWeight:700,color:GAP_COLOUR[gapLabel],marginTop:2}}>
+                    {GAP_LABEL[gapLabel]}
+                  </div>
+                )}
               </div>
             </div>
 
             {/* Time breakdown */}
             {times ? (
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4,marginBottom:10,background:'var(--surface2)',borderRadius:6,padding:'8px 10px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4,marginBottom:8,background:'var(--surface2)',borderRadius:6,padding:'8px 10px'}}>
                 {[['🎒 Get ready', fmtT(times.getReady)],['🚗 Leave by', fmtT(times.leaveBy)],['📍 Arrive by', fmtT(times.arrivalTarget)]].map(([l,v])=>(
                   <div key={l} style={{textAlign:'center'}}>
                     <div style={{fontSize:10,color:'var(--muted)'}}>{l}</div>
@@ -4104,20 +4230,28 @@ function TravelPage() {
                 ))}
               </div>
             ) : (
-              <div style={{background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'7px 10px',marginBottom:10,fontSize:12}}>
+              <div style={{background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'7px 10px',marginBottom:8,fontSize:12}}>
                 ⚠ No journey estimate. Tap Edit to enter one.
               </div>
             )}
 
-            {/* Confidence / summary */}
+            {/* v2: prep suggestions */}
+            {prepItems.length > 0 && (
+              <div style={{background:'rgba(79,124,255,0.06)',borderRadius:6,padding:'6px 10px',marginBottom:8,fontSize:11}}>
+                <div style={{fontWeight:600,marginBottom:3}}>Prep needed:</div>
+                {prepItems.map((p,i)=><div key={i} style={{color:'var(--muted)'}}>• {p}</div>)}
+              </div>
+            )}
+
             <div className="meta" style={{marginBottom:8}}>
-              Journey: {jMins!=null?`~${jMins} min (manual)`:'unknown'} · Prep: {prep}m · Buffer: {pre}m
+              Journey: {jMins!=null ? '~'+jMins+' min (manual)' : 'unknown'} · Prep: {prep}m · Buffer: {pre}m
+              {gapLabel==='comfortable'&&<span style={{color:'var(--accent)'}}> · Gap OK</span>}
             </div>
 
-            {/* Edit panel */}
+            {/* Edit panel — v2 includes profile + start location override */}
             {isEditing && (
               <div style={{background:'var(--surface2)',borderRadius:6,padding:10,marginBottom:10}}>
-                <div style={{fontSize:12,marginBottom:8}}>Override for this event</div>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:8}}>Journey details</div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                   <div>
                     <div style={{fontSize:11,marginBottom:3}}>Journey time (min)</div>
@@ -4137,6 +4271,34 @@ function TravelPage() {
                     <option value="">Default settings</option>
                     {presets.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
+                </div>
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,marginBottom:3}}>Custom start location (leave blank to auto-detect)</div>
+                  <input className="input" placeholder={'Auto: ' + startLoc.name}
+                    value={editVals.startLocationCustom?.address||''}
+                    onChange={e2=>setEditVals(v=>({...v,startLocationCustom:e2.target.value?{name:e2.target.value,address:e2.target.value}:null}))}/>
+                </div>
+                <div style={{borderTop:'1px solid var(--border)',paddingTop:8,marginBottom:8}}>
+                  <div style={{fontSize:11,fontWeight:600,marginBottom:6}}>Trip profile</div>
+                  <div style={{marginBottom:6}}>
+                    <div style={{fontSize:11,marginBottom:3}}>Kit level</div>
+                    <select className="input" value={(editVals.profile?.kit_level)||'normal'} onChange={e2=>setEditVals(v=>({...v,profile:{...(v.profile||{}),kit_level:e2.target.value}}))}>
+                      <option value="light">Light — just myself</option>
+                      <option value="normal">Normal — day bag</option>
+                      <option value="kit-heavy">Kit-heavy — sailing/sports/full kit</option>
+                    </select>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                    {[['requires_laptop','💻 Laptop bag'],['requires_overnight','🧳 Overnight bag'],
+                      ['requires_smart_clothes','👔 Smart clothes'],['requires_food_water','🥤 Food/water'],
+                      ['needs_parking','🅿️ Parking'],['check_weather','🌤 Check weather']].map(([k,l])=>(
+                      <label key={k} style={{fontSize:11,display:'flex',gap:5,alignItems:'center',cursor:'pointer'}}>
+                        <input type="checkbox" checked={!!(editVals.profile?.[k])}
+                          onChange={e2=>setEditVals(v=>({...v,profile:{...(v.profile||{}),[k]:e2.target.checked}}))}/>
+                        {l}
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div className="row" style={{gap:6}}>
                   <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id)}>Save</button>
@@ -5055,11 +5217,22 @@ function DashboardPage({ user, onNavigate }) {
             const times = jMins!=null ? calcTravelTimes(e.start, jMins, pre, prep) : null;
             const blockStatus = tstate.createdBlocks?.[e.id] ? 'created' : 'missing';
 
+            // v2: start location intelligence
+            const startLoc = ov.startLocationCustom
+              ? {...ov.startLocationCustom, source:'custom'}
+              : calcStartLocation(e, evts, tsCfg.default_start_name, tsCfg.default_start_address);
+            const prevEvt  = evts.filter(ev=>ev.id!==e.id&&!ev.allDay&&new Date(ev.start)<new Date(e.start)).sort((a,b)=>new Date(b.start)-new Date(a.start))[0];
+            const prevEndTs= prevEvt?.end||(prevEvt?new Date(new Date(prevEvt.start).getTime()+3600000).toISOString():null);
+            const gapLabel = calcGapLabel(times?.getReady, prevEndTs);
+
             // Evening-before prep: event is tomorrow before 9am and journey is significant
             const eventDate = new Date(e.start);
             const isEarlyNextDay = (eventDate.getTime() - nowMs) < 36*3600000 && eventDate.getHours() < 9;
-            const eveningPrep = isEarlyNextDay && jMins && jMins > 20
-              ? 'Early departure — pack bag and prep kit tonight'
+            const prepSuggs = calcPrepSuggestions(ov.profile||{});
+            const kitHeavy  = ov.profile?.kit_level==='kit-heavy';
+            const overnightReq = ov.profile?.requires_overnight;
+            const eveningPrep = (isEarlyNextDay || kitHeavy || overnightReq) && (jMins || kitHeavy || overnightReq)
+              ? [isEarlyNextDay?'Early start — prep tonight':`Kit-heavy trip`,...prepSuggs].filter(Boolean).join(', ')
               : null;
 
             // Tight gap: get-ready time is within 2 hours of now
@@ -5079,8 +5252,17 @@ function DashboardPage({ user, onNavigate }) {
               leave_by:       times ? times.leaveBy.toISOString()  : null,
               arrival_target: times ? times.arrivalTarget.toISOString() : null,
               block_status:   blockStatus,
-              tight_gap:      tightGap,
-              evening_prep_needed: eveningPrep,
+              // v2 fields
+              start_location_name:    startLoc.name,
+              start_location_source:  startLoc.source,
+              gap_label:              gapLabel,
+              kit_level:              ov.profile?.kit_level || 'normal',
+              requires_laptop:        ov.profile?.requires_laptop || false,
+              requires_overnight:     ov.profile?.requires_overnight || false,
+              requires_smart_clothes: ov.profile?.requires_smart_clothes || false,
+              prep_items:             prepSuggs,
+              tight_gap:              tightGap,
+              evening_prep_needed:    eveningPrep,
             };
           });
           const totalMins = suggestions.reduce((acc,s)=>{
@@ -5091,6 +5273,8 @@ function DashboardPage({ user, onNavigate }) {
           travelContext = {
             planning_window: '48h',
             start_location:  tsCfg.default_start_name || 'Home',
+            travel_pressure_today:    calcTravelPressure(suggestions.filter(s=>s.event_start?.slice(0,10)===new Date().toISOString().slice(0,10))),
+            travel_pressure_tomorrow: calcTravelPressure(suggestions.filter(s=>s.event_start?.slice(0,10)===new Date(Date.now()+86400000).toISOString().slice(0,10))),
             suggestions,
             total_travel_time_hours: totalMins > 0 ? parseFloat((totalMins/60).toFixed(1)) : null,
             calculated_at: new Date().toISOString(),
