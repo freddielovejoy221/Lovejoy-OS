@@ -239,8 +239,9 @@ function calcTravelTimes(eventStart, journeyMins, preBuffer, prepBuffer) {
 function buildNavLinks(destination, origin, mode) {
   const enc = encodeURIComponent;
   const modeGm = {driving:'driving',transit:'transit',walking:'walking',cycling:'bicycling'}[mode]||'driving';
-  const google = `https://www.google.com/maps/dir/?api=1&destination=${enc(destination)}${origin?`&origin=${enc(origin)}`:''}&travelmode=${modeGm}`;
-  const waze   = `https://www.waze.com/ul?q=${enc(destination)}&navigate=yes`;
+  const originPart = origin ? ('&origin=' + enc(origin)) : '';
+  const google = 'https://www.google.com/maps/dir/?api=1&destination=' + enc(destination) + originPart + '&travelmode=' + modeGm;
+  const waze   = 'https://www.waze.com/ul?q=' + enc(destination) + '&navigate=yes';
   return { google, waze };
 }
 
@@ -3783,7 +3784,7 @@ function TravelPage() {
     const desc = [
       `Original event: ${e.title}`,
       `Destination: ${e.location}`,
-      `Start location: ${cfg.default_start_name||''}${cfg.default_start_address?` (${cfg.default_start_address})`:''}`,
+      'Start location: ' + (cfg.default_start_name||'') + (cfg.default_start_address ? ' (' + cfg.default_start_address + ')' : ''),
       `Travel mode: ${TRAVEL_MODE_LABEL[mode]||mode}`,
       `Preset: ${pr?.name||'Default'}`,
       `Estimated journey: ${jMins} min`,
