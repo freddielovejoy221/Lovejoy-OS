@@ -200,6 +200,8 @@ const DEFAULT_WEATHER_SETTINGS = {
   act_walking:true, act_outdoor_work:true, act_hayfever:true,
   show_weather_card:true, dashboard_location_id:null, compact_card:false,
   show_interpretation:true, include_in_helm:true, auto_refresh:'manual', show_last_updated:true,
+  // Auto-refresh v2
+  refresh_on_open:true, stale_after:'1h', refresh_on_foreground:true, show_cached_while_refreshing:true,
 };
 
 // ── WEATHER MODULE-LEVEL CACHE ────────────────────────────────
@@ -208,6 +210,25 @@ const DEFAULT_WEATHER_SETTINGS = {
 let _wxCache    = { data:null, locId:null, ts:null };
 let _wxSettings = null;  // latest loaded weather_settings row
 let _wxLocation = null;  // latest loaded weather_locations default row
+
+// ── WEATHER PERSISTENCE ───────────────────────────────────────
+const WX_STORE_KEY = 'ljos_wx_snap';
+
+const getStaleMs = (ws) => {
+  const s = ws?.stale_after || ws?.auto_refresh || '1h';
+  if (s === '15m')   return 15 * 60000;
+  if (s === '30m')   return 30 * 60000;
+  if (s === 'hourly' || s === '1h') return 60 * 60000;
+  if (s === '3h')    return 3 * 60 * 60000;
+  return Infinity; // manual only
+};
+
+const saveWxSnap = (data, locId) => {
+  try { localStorage.setItem(WX_STORE_KEY, JSON.stringify({ data, locId, ts:Date.now() })); } catch(e) {}
+};
+const loadWxSnap = () => {
+  try { const r = localStorage.getItem(WX_STORE_KEY); return r ? JSON.parse(r) : null; } catch(e) { return null; }
+};
 
 // Convert mph threshold to display unit for comparison
 const mphToUnit = (mph, unit) =>
@@ -554,7 +575,6 @@ async function callHelm(type, extra = {}) {
   if (_wxCache.data && !_wxCache.data.error && _wxSettings?.include_in_helm !== false) {
     const wxd = _wxCache.data;
     const risk = calcOutdoorRisk(wxd, _wxSettings);
-    const staleMs = Date.now() - new Date(wxd.fetched_at||0).getTime();
     weatherContext = {
       location:      wxd.location_name || (_wxLocation?.name||null),
       temp_c:        wxd.temp,
@@ -573,7 +593,8 @@ async function callHelm(type, extra = {}) {
       risk_triggers: risk.triggers.map(t=>`${t.reason}: ${t.level}`),
       interpretation: generateOutdoorInterpretation(wxd, risk, _wxSettings),
       fetched_at:    wxd.fetched_at,
-      is_stale:      staleMs > 4*3600000,
+      age_minutes:   wxd.fetched_at ? Math.round((Date.now()-new Date(wxd.fetched_at).getTime())/60000) : null,
+      is_stale:      (Date.now()-new Date(wxd.fetched_at||0).getTime()) > getStaleMs(_wxSettings),
     };
   }
 
@@ -2049,15 +2070,19 @@ function WeatherSettingsPage() {
           <Toggle label="Show Helm outdoor interpretation" detail="Rule-based interpretation line below the card" val={ws.show_interpretation} onChange={v=>persist({show_interpretation:v})}/>
           <Toggle label="Include weather in Plan My Day" detail="Helm reads the current weather snapshot when generating a brief" val={ws.include_in_helm} onChange={v=>persist({include_in_helm:v})}/>
           <Toggle label="Show last updated time" val={ws.show_last_updated} onChange={v=>persist({show_last_updated:v})}/>
+          <Toggle label="Show cached while refreshing" detail="Display last snapshot instantly while fresh data loads" val={ws.show_cached_while_refreshing!==false} onChange={v=>persist({show_cached_while_refreshing:v})}/>
           <div style={{padding:'11px 0',borderBottom:'1px solid var(--border)'}}>
-            <div style={{fontSize:13,marginBottom:6}}>Auto-refresh</div>
-            <select className="input" value={ws.auto_refresh||'manual'} onChange={e=>persist({auto_refresh:e.target.value})}>
-              <option value="manual">Manual only (tap refresh)</option>
-              <option value="off">Off</option>
-              <option value="hourly">Every hour</option>
-              <option value="3h">Every 3 hours</option>
+            <div style={{fontSize:13,marginBottom:6}}>Consider data stale after</div>
+            <select className="input" value={ws.stale_after||'1h'} onChange={e=>persist({stale_after:e.target.value})}>
+              <option value="manual">Manual only — never auto-refresh</option>
+              <option value="15m">15 minutes</option>
+              <option value="30m">30 minutes</option>
+              <option value="1h">1 hour (recommended)</option>
+              <option value="3h">3 hours</option>
             </select>
           </div>
+          <Toggle label="Refresh on app open" detail="Fetch fresh data when you open the dashboard (if stale)" val={ws.refresh_on_open!==false} onChange={v=>persist({refresh_on_open:v})}/>
+          <Toggle label="Refresh when returning to app" detail="Refresh if stale when you switch back to this tab" val={ws.refresh_on_foreground!==false} onChange={v=>persist({refresh_on_foreground:v})}/>
           <div className="meta" style={{marginTop:12}}>All settings save automatically when changed.</div>
         </div>
       )}
@@ -4091,7 +4116,9 @@ function WeatherCard({ wx, ws, location, onRefresh, fetching }) {
 
       {/* Last updated */}
       {ws.show_last_updated && wx.fetched_at && (
-        <div className="meta" style={{marginTop:6,fontSize:10}}>Updated {relTime(wx.fetched_at)}</div>
+        <div className="meta" style={{marginTop:6,fontSize:10}}>
+          {fetching ? <span style={{color:'var(--amber)'}}>Updating…</span> : `Updated ${relTime(wx.fetched_at)}`}
+        </div>
       )}
     </div>
   );
@@ -4142,30 +4169,67 @@ function DashboardPage({ user, onNavigate }) {
     // Today's Helm brief — read-only
     fetchTodaysBrief().then(b=>setBrief(b));
 
-    // Weather — use cache if available; auto-fetch based on setting
+    // Weather — show snapshot instantly, background-refresh if stale
     if (wsCfg.show_weather_card && wloc) {
-      if (_wxCache.data && _wxCache.locId===wloc.id) {
-        setWx(_wxCache.data);
-        // Background refresh if stale and auto-refresh is on
-        const maxAge = wsCfg.auto_refresh==='3h' ? 10800000 : wsCfg.auto_refresh==='hourly' ? 3600000 : 0;
-        if (maxAge>0 && Date.now()-(_wxCache.ts||0) > maxAge) {
-          fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name).then(d=>{
-            _wxCache = {data:d, locId:wloc.id, ts:Date.now()};
-            setWx(d);
-          });
+      // 1. Try module-level cache (survives navigation within session)
+      let snap = (_wxCache.data && _wxCache.locId===wloc.id) ? _wxCache : null;
+
+      // 2. Fall back to localStorage (survives page reload)
+      if (!snap) {
+        const stored = loadWxSnap();
+        if (stored && stored.locId===wloc.id && stored.data && !stored.data.error) {
+          snap = stored;
+          _wxCache = { data:stored.data, locId:stored.locId, ts:stored.ts };
         }
-      } else if (wsCfg.auto_refresh !== 'manual') {
-        // Auto-fetch on first load
+      }
+
+      // 3. Show snapshot immediately if available
+      if (snap) setWx(snap.data);
+
+      // 4. Decide whether to fetch
+      const staleMs  = getStaleMs(wsCfg);
+      const age      = Date.now() - (snap?.ts || 0);
+      const isStale  = !snap || age > staleMs;
+      const shouldFetch = wsCfg.refresh_on_open !== false && isStale;
+
+      if (shouldFetch) {
         setWxFetching(true);
-        fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name).then(d=>{
-          _wxCache = {data:d, locId:wloc.id, ts:Date.now()};
-          setWx(d); setWxFetching(false);
+        fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name).then(d => {
+          if (!d.error) {
+            _wxCache = { data:d, locId:wloc.id, ts:Date.now() };
+            saveWxSnap(d, wloc.id);
+            setWx(d);
+          } else if (!snap) {
+            setWx(d); // show error card only if nothing cached
+          }
+          // On failure with cached data: keep showing cache (silent fail)
+          setWxFetching(false);
         });
       }
-      // If manual: show empty card with Fetch button
     }
   };
   useEffect(()=>{ load(); },[]);
+
+  // Foreground refresh: fire when tab returns to foreground and data is stale
+  useEffect(()=>{
+    const handleFg = () => {
+      if (document.visibilityState!=='visible') return;
+      if (_wxSettings?.refresh_on_foreground===false || !_wxLocation) return;
+      const age = Date.now()-(_wxCache.ts||0);
+      if (age <= getStaleMs(_wxSettings)) return;
+      setWxFetching(true);
+      fetchWeather(_wxLocation.latitude, _wxLocation.longitude, _wxSettings, _wxLocation.name).then(d=>{
+        if (!d.error) {
+          _wxCache = { data:d, locId:_wxLocation.id, ts:Date.now() };
+          saveWxSnap(d, _wxLocation.id);
+          setWx(d);
+        }
+        setWxFetching(false);
+      });
+    };
+    document.addEventListener('visibilitychange', handleFg);
+    return ()=> document.removeEventListener('visibilitychange', handleFg);
+  },[]);
 
   const refreshWeather = async () => {
     const wloc = _wxLocation;
@@ -4174,6 +4238,7 @@ function DashboardPage({ user, onNavigate }) {
     setWxFetching(true);
     const d = await fetchWeather(wloc.latitude, wloc.longitude, wsCfg, wloc.name);
     _wxCache = { data:d, locId:wloc.id, ts:Date.now() };
+    if (!d.error) saveWxSnap(d, wloc.id);
     setWx(d); setWxFetching(false);
     // Log to helm_logs for System Health tracking
     const {data:{user:u}} = await supabase.auth.getUser();
