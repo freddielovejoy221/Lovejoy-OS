@@ -3528,9 +3528,21 @@ function ProposedActions({ changes, sourceRequest }) {
 function TravelSettingsPage() {
   const [ts,  setTs]  = useState(null);
   const [presets, setPresets] = useState([]);
-  const [editPreset, setEditPreset] = useState(null); // null=list, {}=new, {..}=edit
+  const [editPreset, setEditPreset] = useState(null);
   const [saving, setSaving] = useState(false);
   const [seeded, setSeeded] = useState(false);
+
+  const Toggle = ({label, val, onChange, detail=null}) => (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--border)',gap:12}}>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13}}>{label}</div>
+        {detail && <div className="meta" style={{marginTop:2}}>{detail}</div>}
+      </div>
+      <div onClick={()=>onChange(!val)} style={{width:40,height:22,borderRadius:11,background:val?'var(--accent)':'var(--surface2)',cursor:'pointer',flexShrink:0,position:'relative',transition:'background 0.15s'}}>
+        <div style={{position:'absolute',top:3,left:val?20:3,width:16,height:16,borderRadius:'50%',background:'#fff',transition:'left 0.15s'}}/>
+      </div>
+    </div>
+  );
 
   useEffect(()=>{ load(); },[]);
 
@@ -3559,7 +3571,7 @@ function TravelSettingsPage() {
     setTs(merged);
     const {data:{user}} = await supabase.auth.getUser();
     if (!user) return;
-    await supabase.from('travel_settings').upsert({...merged, user_id:user.id}).eq('user_id',user.id);
+    await supabase.from('travel_settings').upsert({...merged, user_id:user.id}, {onConflict:'user_id'});
   };
 
   const savePreset = async () => {
