@@ -4793,12 +4793,53 @@ function TravelPage() {
           If you have duplicate travel blocks from a previous session, open Google Calendar → find the duplicates in your Lovejoy OS calendar → delete the extras manually.
         </div>
         <div style={{marginTop:10,display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={async ()=>{
+            if (!userId) { alert('Not signed in'); return; }
+            const s = loadTravelState();
+            const ovEntries = Object.entries(s.overrides||{});
+            const dismissed = s.dismissed||[];
+            if (ovEntries.length===0 && dismissed.length===0) { alert('No local overrides to push.'); return; }
+            if (!window.confirm('Push all ' + (ovEntries.length + dismissed.length) + ' local overrides to Supabase? This will make them available on all devices.')) return;
+            let ok=0, fail=0;
+            // Push overrides
+            for (const [evId, ov] of ovEntries) {
+              const ev = events.find(e=>e.id===evId)||{};
+              try {
+                await supabase.from('travel_event_overrides').delete().eq('user_id',userId).eq('source_event_id',evId);
+                await supabase.from('travel_event_overrides').insert({
+                  user_id:userId, source_event_id:evId,
+                  source_event_start:ev.start||null, source_event_title:ev.title||null,
+                  source_event_location:ev.location||null,
+                  journey_time_minutes:ov.journeyMins>0?ov.journeyMins:null,
+                  travel_mode:ov.mode||null, preset_id:ov.presetId||null,
+                  custom_start_location:ov.startLocationCustom||null,
+                  dismissed:false, updated_at:new Date().toISOString(),
+                });
+                ok++;
+              } catch(e){ fail++; }
+            }
+            // Push dismissed
+            for (const evId of dismissed) {
+              const ev = events.find(e=>e.id===evId)||{};
+              try {
+                await supabase.from('travel_event_overrides').delete().eq('user_id',userId).eq('source_event_id',evId);
+                await supabase.from('travel_event_overrides').insert({
+                  user_id:userId, source_event_id:evId,
+                  source_event_start:ev.start||null, source_event_title:ev.title||null,
+                  source_event_location:ev.location||null, dismissed:true,
+                  updated_at:new Date().toISOString(),
+                });
+                ok++;
+              } catch(e){ fail++; }
+            }
+            alert('Pushed ' + ok + ' overrides to Supabase.' + (fail>0?' '+fail+' failed — check console.':'') + '\nOther devices will see these on next ↻ Sync.');
+          }}>⬆ Push all to DB</button>
           <button className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>{
             if (!window.confirm('Clear all journey overrides? This removes saved journey times, modes, presets and profiles for all events. Checklists and dismissed events are kept.')) return;
             const s = loadTravelState();
             s.overrides = {};
             saveTravelState(s);
-            setEvents(ev=>[...ev]); // re-render
+            setEvents(ev=>[...ev]);
           }}>Clear all overrides</button>
           <button className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>{
             if (!window.confirm('Clear dismissed events? All previously dismissed events will reappear.')) return;
