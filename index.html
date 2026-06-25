@@ -322,6 +322,42 @@ async function syncChecklistDB(userId, eventId, cl) {
   } catch(e){}
 }
 
+// ── GENERIC ACTION STATE HELPERS ─────────────────────────────
+// Reusable for Security, Setup, System Health, and any future
+// module where checklist/action completion must sync across devices.
+
+async function loadActionStates(module) {
+  try {
+    const {data:{user}} = await supabase.auth.getUser();
+    if (!user) return {};
+    const {data} = await supabase.from('user_action_states')
+      .select('item_key,completed').eq('user_id',user.id).eq('module',module);
+    const result = {};
+    (data||[]).forEach(row => { result[row.item_key] = !!row.completed; });
+    return result; // {itemKey: true/false}
+  } catch(e) { return {}; }
+}
+
+async function saveActionState(module, itemKey, completed) {
+  try {
+    const {data:{user}} = await supabase.auth.getUser();
+    if (!user) return false;
+    // Delete then insert — reliable, avoids onConflict multi-column issues
+    await supabase.from('user_action_states')
+      .delete().eq('user_id',user.id).eq('module',module).eq('item_key',itemKey);
+    const {error} = await supabase.from('user_action_states').insert({
+      user_id:user.id, module, item_key:itemKey,
+      completed, completed_at: completed ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+    return true;
+  } catch(e) {
+    console.warn('action state save failed:', module, itemKey, e);
+    return false;
+  }
+}
+
 // Determine likely start location from the previous event in the window
 function calcStartLocation(event, allTimedEvents, defaultName, defaultAddress) {
   const eStart = new Date(event.start);
@@ -2543,20 +2579,51 @@ function RoadmapQueuePage() {
 // ── SECURITY & PRIVACY PAGE ──────────────────────────────────
 function SecurityPage() {
   const REVIEW_DATE = 'June 2026';
-  const STORE_KEY = 'ljos_security_done';
-  const [done, setDone] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch(e) { return []; }
-  });
+  const MODULE    = 'security';
+  const STORE_KEY = 'ljos_security_done'; // kept as migration source + offline fallback
+  const [done,      setDone]      = useState([]);
+  const [saving,    setSaving]    = useState(null); // item ID currently saving
+  const [saveError, setSaveError] = useState(null);
 
-  const markDone = (id) => {
+  useEffect(()=>{
+    (async ()=>{
+      // Load from Supabase first
+      const dbState = await loadActionStates(MODULE);
+      if (Object.keys(dbState).length > 0) {
+        const ids = Object.entries(dbState).filter(([,v])=>v).map(([k])=>k);
+        setDone(ids);
+        try { localStorage.setItem(STORE_KEY, JSON.stringify(ids)); } catch(e){}
+      } else {
+        // Migrate from localStorage on first load
+        try {
+          const local = JSON.parse(localStorage.getItem(STORE_KEY)||'[]');
+          if (local.length > 0) {
+            setDone(local);
+            for (const id of local) await saveActionState(MODULE, id, true);
+          }
+        } catch(e){}
+      }
+    })();
+  },[]);
+
+  const markDone = async (id) => {
+    setSaving(id); setSaveError(null);
     const next = [...new Set([...done, id])];
-    setDone(next);
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(next)); } catch(e) {}
+    setDone(next); // optimistic update
+    const ok = await saveActionState(MODULE, id, true);
+    if (!ok) { setDone(done); setSaveError(id); } // revert on failure
+    else { try { localStorage.setItem(STORE_KEY, JSON.stringify(next)); } catch(e){} }
+    setSaving(null);
   };
-  const unmark = (id) => {
-    const next = done.filter(x => x !== id);
+
+  const unmark = async (id) => {
+    setSaving(id); setSaveError(null);
+    const next = done.filter(x=>x!==id);
     setDone(next);
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(next)); } catch(e) {}
+    const ok = await saveActionState(MODULE, id, false);
+    if (!ok) { setDone(done); setSaveError(id); }
+    else { try { localStorage.setItem(STORE_KEY, JSON.stringify(next)); } catch(e){} }
+    setSaving(null);
   };
 
   const findings = [
@@ -2644,9 +2711,10 @@ function SecurityPage() {
                 {f.risk}
               </span>}
               <button className="btn btn-ghost btn-sm" style={{fontSize:10,padding:'2px 7px',
-                color:f.isDone?'var(--muted)':'var(--accent)'}}
+                color:saveError===f.id?'var(--red)':f.isDone?'var(--muted)':'var(--accent)',
+                opacity:saving===f.id?0.5:1,pointerEvents:saving===f.id?'none':'auto'}}
                 onClick={()=>f.isDone?unmark(f.id):markDone(f.id)}>
-                {f.isDone?'✓ Done — undo':'Mark done'}
+                {saving===f.id?'Saving…':saveError===f.id?'✗ Retry':f.isDone?'✓ Done — undo':'Mark done'}
               </button>
             </div>
           </div>
