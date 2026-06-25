@@ -6189,7 +6189,7 @@ function DashboardPage({ user, onNavigate }) {
 
       {/* Helm Brief card */}
       <WeatherCard wx={wx} ws={_wxSettings||DEFAULT_WEATHER_SETTINGS} location={_wxLocation} onRefresh={refreshWeather} fetching={wxFetching}/>
-      <HealthCard onNavigate={setPage}/>
+      <HealthCard onNavigate={onNavigate}/>
 
       {/* Helm Brief */}
       <div className="card" style={{marginBottom:18,border:'1px solid var(--border)'}}>
