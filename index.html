@@ -316,6 +316,12 @@ function calcReadiness(snap, travelContext, weatherContext) {
     else if (snap.stress_level > 50)   score -= 5;
   }
 
+  // Respiratory rate (elevated rate can signal illness/overtraining)
+  if (snap.respiratory_rate != null) {
+    metricCount++;
+    if (snap.respiratory_rate > 18) { score -= 10; drivers.push('Elevated respiratory rate (' + snap.respiratory_rate + ' brpm)'); }
+  }
+
   // SpO2
   if (snap.oxygen_saturation_avg != null) {
     metricCount++;
@@ -4100,7 +4106,8 @@ function HealthPage() {
     ['steps','Steps'],['heart_rate_avg','Avg HR'],['hrv_value','HRV'],
     ['oxygen_saturation_avg','SpO2'],['active_energy_kcal','Active energy'],
     ['exercise_minutes','Exercise minutes'],['body_battery_morning','Body Battery'],
-    ['stress_level','Stress'],['weight_kg','Weight'],
+    ['stress_level','Stress'],['respiratory_rate','Respiratory rate'],
+    ['vo2_max','VO2 Max'],['weight_kg','Weight'],
   ];
   const received = METRIC_FIELDS.filter(([k])=>latest?.[k]!=null).map(([,l])=>l);
   const missing  = METRIC_FIELDS.filter(([k])=>latest?.[k]==null).map(([,l])=>l);
@@ -6235,36 +6242,54 @@ function DashboardPage({ user, onNavigate }) {
       }
     } catch(e) { /* travel context is optional — don't block Helm */ }
 
-    // Health context — load latest snapshot for Helm
+    // Health context — combines last night's recovery + yesterday's activity load
     let healthContext = null;
     try {
       const {data:{user:u}} = await supabase.auth.getUser();
       const hsRes = await supabase.from('health_settings').select('enabled,include_in_helm').eq('user_id',u.id).maybeSingle();
       if (hsRes.data?.enabled && hsRes.data?.include_in_helm) {
-        const snapRes = await supabase.from('health_daily_snapshots').select('*').eq('user_id',u.id).order('date',{ascending:false}).limit(1).maybeSingle();
-        if (snapRes.data) {
-          const snap = snapRes.data;
-          const readiness = calcReadiness(snap, travelContext, null);
-          const dq = calcDataQuality(snap, []);
-          // Fetch today's workouts
-          let todayWorkouts = [];
+        const todayStr = new Date().toISOString().slice(0,10);
+        const yestStr  = new Date(Date.now()-86400000).toISOString().slice(0,10);
+        // Pull the last 2 snapshots
+        const snapRes = await supabase.from('health_daily_snapshots').select('*').eq('user_id',u.id).order('date',{ascending:false}).limit(2);
+        const snaps = snapRes.data||[];
+        const todaySnap = snaps.find(s=>s.date===todayStr) || snaps[0] || null;
+        const yestSnap  = snaps.find(s=>s.date===yestStr) || snaps[1] || null;
+
+        if (todaySnap || yestSnap) {
+          // Recovery comes from the most recent snapshot (last night's sleep/HRV/resting HR)
+          const recoverySnap = todaySnap || yestSnap;
+          // Activity/load comes from yesterday's full day
+          const loadSnap = yestSnap || todaySnap;
+
+          const readiness = calcReadiness(recoverySnap, travelContext, null);
+          const dq = calcDataQuality(recoverySnap, []);
+
+          // Yesterday's workouts (the load carrying into today)
+          let yestWorkouts = [];
           try {
-            const wRes = await supabase.from('health_workouts').select('workout_type,duration_minutes,average_heart_rate,distance_m').eq('user_id',u.id).eq('date',snap.date);
-            todayWorkouts = wRes.data||[];
+            const wRes = await supabase.from('health_workouts').select('workout_type,duration_minutes,average_heart_rate,distance_m').eq('user_id',u.id).eq('date', loadSnap?.date || yestStr);
+            yestWorkouts = wRes.data||[];
           } catch(e2) {}
+
           healthContext = {
+            // Recovery (from last night)
             readiness: readiness.label, readiness_confidence: readiness.confidence,
             readiness_drivers: readiness.drivers, missing_metrics: readiness.missing_metrics,
-            data_quality: dq.label, data_date: snap.date, is_today: snap.date===today,
-            data_freshness: snap.data_freshness, provider: snap.provider,
-            sleep_hours: snap.sleep_duration_hours, sleep_score: snap.sleep_score,
-            body_battery: snap.body_battery_morning, stress_level: snap.stress_level,
-            resting_hr: snap.resting_heart_rate, hrv_status: snap.hrv_status, hrv_value: snap.hrv_value,
-            steps: snap.steps, exercise_minutes: snap.exercise_minutes ?? snap.active_minutes,
-            active_energy: snap.active_energy_kcal,
-            workout_count: todayWorkouts.length,
-            workouts_summary: todayWorkouts.map(w=>w.workout_type+(w.duration_minutes?' '+w.duration_minutes+'min':'')).join(', ')||null,
-            recovery_time_hours: snap.recovery_time_hours, training_load: snap.training_load_status,
+            data_quality: dq.label, recovery_date: recoverySnap?.date, recovery_is_today: recoverySnap?.date===todayStr,
+            provider: recoverySnap?.provider,
+            sleep_hours: recoverySnap?.sleep_duration_hours, sleep_score: recoverySnap?.sleep_score,
+            resting_hr: recoverySnap?.resting_heart_rate, hrv_value: recoverySnap?.hrv_value, hrv_status: recoverySnap?.hrv_status,
+            respiratory_rate: recoverySnap?.respiratory_rate, body_battery: recoverySnap?.body_battery_morning,
+            stress_level: recoverySnap?.stress_level, vo2_max: recoverySnap?.vo2_max,
+            // Yesterday's load
+            yesterday_date: loadSnap?.date,
+            yesterday_steps: loadSnap?.steps,
+            yesterday_exercise_minutes: loadSnap?.exercise_minutes ?? loadSnap?.active_minutes,
+            yesterday_active_energy: loadSnap?.active_energy_kcal,
+            yesterday_workout_count: yestWorkouts.length,
+            yesterday_workouts: yestWorkouts.map(w=>w.workout_type+(w.duration_minutes?' '+w.duration_minutes+'min':'')).join(', ')||null,
+            recovery_time_hours: recoverySnap?.recovery_time_hours, training_load: recoverySnap?.training_load_status,
           };
         }
       }
