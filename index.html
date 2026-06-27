@@ -4061,7 +4061,9 @@ function HealthPage() {
   const [latest,   setLatest]   = useState(null);
   const [workouts, setWorkouts] = useState([]);
   const [saving,   setSaving]   = useState(false);
-  const [tab,      setTab]      = useState('status'); // status / diagnostics / setup
+  const [tab,      setTab]      = useState('status');
+  const [withings, setWithings] = useState(null); // {connected, last_sync}
+  const [wSyncing, setWSyncing] = useState(false);
 
   useEffect(()=>{ load(); },[]);
 
@@ -4077,6 +4079,55 @@ function HealthPage() {
     setHs(hsRes.data || {enabled:true,preferred_source:'apple_health_bridge',include_in_helm:true});
     setLatest(snapRes.data);
     setWorkouts(wRes.data||[]);
+    // Withings connection status
+    try {
+      const {data:{session}} = await supabase.auth.getSession();
+      if (session) {
+        const res = await fetch(SUPABASE_URL+'/functions/v1/withings-auth?action=status', {
+          headers: { 'Authorization':'Bearer '+session.access_token, 'apikey':SUPABASE_ANON_KEY }
+        });
+        const d = await res.json();
+        setWithings(d);
+      }
+    } catch(e) { setWithings({connected:false}); }
+  };
+
+  const connectWithings = async () => {
+    const {data:{session}} = await supabase.auth.getSession();
+    if (!session) return;
+    const redirectUri = window.location.origin + window.location.pathname;
+    const res = await fetch(SUPABASE_URL+'/functions/v1/withings-auth?action=get_auth_url', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY},
+      body: JSON.stringify({ action:'get_auth_url', redirect_uri: redirectUri }),
+    });
+    const d = await res.json();
+    if (d.url) window.location.href = d.url;
+  };
+
+  const syncWithings = async () => {
+    setWSyncing(true);
+    const {data:{session}} = await supabase.auth.getSession();
+    if (session) {
+      await fetch(SUPABASE_URL+'/functions/v1/withings-sync', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY},
+        body: JSON.stringify({}),
+      });
+      await load();
+    }
+    setWSyncing(false);
+  };
+
+  const disconnectWithings = async () => {
+    const {data:{session}} = await supabase.auth.getSession();
+    if (!session) return;
+    await fetch(SUPABASE_URL+'/functions/v1/withings-auth', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY},
+      body: JSON.stringify({action:'disconnect'}),
+    });
+    setWithings({connected:false});
   };
 
   const persist = async (patch) => {
@@ -4154,6 +4205,10 @@ function HealthPage() {
                     ['⚡ Body Battery',   latest.body_battery_morning!=null ? latest.body_battery_morning : null],
                     ['🧘 Stress',         latest.stress_level!=null ? latest.stress_level : null],
                     ['⚖️ Weight',         latest.weight_kg!=null ? latest.weight_kg+' kg' : null],
+                    ['🩺 Systolic BP',    latest.systolic_bp!=null ? latest.systolic_bp+' mmHg' : null],
+                    ['🩺 Diastolic BP',   latest.diastolic_bp!=null ? latest.diastolic_bp+' mmHg' : null],
+                    ['💪 Muscle mass',    latest.muscle_mass_kg!=null ? latest.muscle_mass_kg+' kg' : null],
+                    ['🧈 Body fat',       latest.body_fat_pct!=null ? latest.body_fat_pct+'%' : null],
                   ].map(([l,v])=>(
                     <div key={l} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'var(--surface2)',borderRadius:6,padding:'7px 10px',opacity:v!=null?1:0.45}}>
                       <span style={{fontSize:11,color:'var(--muted)'}}>{l}</span>
@@ -4224,6 +4279,29 @@ function HealthPage() {
       )}
 
       {tab==='setup' && (
+        <>
+        <div className="card" style={{marginBottom:12}}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Withings Integration</div>
+          {withings?.connected ? (
+            <>
+              <div className="meta" style={{color:'var(--accent)',marginBottom:6}}>✓ Connected</div>
+              {withings.last_sync && <div className="meta" style={{marginBottom:8}}>Last sync: {new Date(withings.last_sync).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>}
+              <div className="row" style={{gap:8}}>
+                <button className="btn btn-primary btn-sm" onClick={syncWithings} disabled={wSyncing}>
+                  {wSyncing ? 'Syncing…' : 'Sync now'}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={disconnectWithings}>Disconnect</button>
+              </div>
+              <div className="meta" style={{marginTop:8}}>Syncs weight, body composition and blood pressure. Data merges with Apple Health metrics.</div>
+            </>
+          ) : (
+            <>
+              <div className="meta" style={{marginBottom:10}}>Connect Withings to automatically sync weight, body fat, muscle mass and blood pressure. No Shortcut needed — pulls directly via OAuth.</div>
+              <div className="meta" style={{marginBottom:8,color:'var(--amber)'}}>First: add WITHINGS_CLIENT_ID and WITHINGS_CLIENT_SECRET to your Supabase Edge Function secrets, then deploy withings-auth and withings-sync functions.</div>
+              <button className="btn btn-primary" style={{justifyContent:'center'}} onClick={connectWithings}>Connect Withings</button>
+            </>
+          )}
+        </div>
         <div className="card">
           <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>iOS Shortcut Setup Guide</div>
           <div style={{fontSize:11,fontWeight:600,color:'var(--muted)',marginBottom:4}}>ENDPOINT</div>
@@ -4250,6 +4328,7 @@ function HealthPage() {
           </div>
           <div className="meta" style={{marginTop:10}}>Run at 07:00 daily via Personal Automation. Garmin usually syncs to Apple Health overnight.</div>
         </div>
+        </>
       )}
     </div>
   );
@@ -6488,9 +6567,26 @@ function App() {
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_,session)=>{
       setUser(session?.user||null);
-      // When Google returns with a fresh provider refresh token, persist it
       if (session?.provider_refresh_token) storeGoogleToken(session);
     });
+    // Withings OAuth callback — detect ?code= + ?state= with withings marker
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code'), state = params.get('state');
+    if (code && state && state.includes('user_id')) {
+      window.history.replaceState({}, '', window.location.pathname);
+      supabase.auth.getSession().then(async ({data:{session}}) => {
+        if (!session) return;
+        try {
+          const res = await fetch(SUPABASE_URL + '/functions/v1/withings-auth', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+session.access_token, 'apikey': SUPABASE_ANON_KEY },
+            body: JSON.stringify({ action:'exchange', code, redirect_uri: window.location.origin + window.location.pathname }),
+          });
+          const data = await res.json();
+          if (data.ok) { setPage('health'); }
+        } catch(e) { console.warn('Withings exchange failed', e); }
+      });
+    }
     return ()=>subscription.unsubscribe();
   },[]);
 
