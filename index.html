@@ -4139,17 +4139,25 @@ function HealthPage() {
                   {!isToday && <span style={{color:'var(--amber)'}}> · ⚠ Not today</span>}
                   {readiness?.confidence && <span> · Confidence: {readiness.confidence}</span>}
                 </div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginTop:8}}>
-                  {[['😴',latest.sleep_duration_hours!=null?latest.sleep_duration_hours+'h':null],
-                    ['⚡',latest.body_battery_morning!=null?latest.body_battery_morning:null],
-                    ['💓',latest.resting_heart_rate!=null?latest.resting_heart_rate+'bpm':null],
-                    ['🧘',latest.stress_level!=null?latest.stress_level:null],
-                    ['👟',latest.steps!=null?latest.steps.toLocaleString():null],
-                    ['🏃',workouts.length>0?workouts[0].workout_type:null],
-                  ].filter(([,v])=>v!=null).map(([l,v])=>(
-                    <div key={l} style={{textAlign:'center',background:'var(--surface2)',borderRadius:6,padding:'6px 4px'}}>
-                      <div style={{fontSize:14}}>{l}</div>
-                      <div style={{fontSize:12,fontWeight:600}}>{v}</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:10}}>
+                  {[
+                    ['😴 Sleep',          latest.sleep_duration_hours!=null ? latest.sleep_duration_hours+'h' : null],
+                    ['💓 Resting HR',     latest.resting_heart_rate!=null ? latest.resting_heart_rate+' bpm' : null],
+                    ['📈 HRV',            latest.hrv_value!=null ? latest.hrv_value+' ms' : null],
+                    ['🫁 Respiratory',    latest.respiratory_rate!=null ? latest.respiratory_rate+' brpm' : null],
+                    ['👟 Steps',          latest.steps!=null ? latest.steps.toLocaleString() : null],
+                    ['🔥 Active energy',  latest.active_energy_kcal!=null ? latest.active_energy_kcal+' kcal' : null],
+                    ['⏱ Exercise',       (latest.exercise_minutes ?? latest.active_minutes)!=null ? (latest.exercise_minutes ?? latest.active_minutes)+' min' : null],
+                    ['❤️ Avg HR',         latest.heart_rate_avg!=null ? latest.heart_rate_avg+' bpm' : null],
+                    ['🩸 SpO2',           latest.oxygen_saturation_avg!=null ? latest.oxygen_saturation_avg+'%' : null],
+                    ['🏔 VO2 Max',        latest.vo2_max!=null ? latest.vo2_max : null],
+                    ['⚡ Body Battery',   latest.body_battery_morning!=null ? latest.body_battery_morning : null],
+                    ['🧘 Stress',         latest.stress_level!=null ? latest.stress_level : null],
+                    ['⚖️ Weight',         latest.weight_kg!=null ? latest.weight_kg+' kg' : null],
+                  ].map(([l,v])=>(
+                    <div key={l} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'var(--surface2)',borderRadius:6,padding:'7px 10px',opacity:v!=null?1:0.45}}>
+                      <span style={{fontSize:11,color:'var(--muted)'}}>{l}</span>
+                      <span style={{fontSize:12,fontWeight:600,color:v!=null?'var(--text)':'var(--muted)'}}>{v!=null ? v : '—'}</span>
                     </div>
                   ))}
                 </div>
