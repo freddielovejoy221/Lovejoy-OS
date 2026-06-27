@@ -4092,17 +4092,28 @@ function HealthPage() {
     } catch(e) { setWithings({connected:false}); }
   };
 
+  const [wConnecting, setWConnecting] = useState(false);
+  const [wError,      setWError]      = useState(null);
+
   const connectWithings = async () => {
-    const {data:{session}} = await supabase.auth.getSession();
-    if (!session) return;
-    const redirectUri = window.location.origin + window.location.pathname;
-    const res = await fetch(SUPABASE_URL+'/functions/v1/withings-auth?action=get_auth_url', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY},
-      body: JSON.stringify({ action:'get_auth_url', redirect_uri: redirectUri }),
-    });
-    const d = await res.json();
-    if (d.url) window.location.href = d.url;
+    setWConnecting(true); setWError(null);
+    try {
+      const {data:{session}} = await supabase.auth.getSession();
+      if (!session) { setWError('Not logged in'); setWConnecting(false); return; }
+      const redirectUri = window.location.origin + window.location.pathname;
+      const res = await fetch(SUPABASE_URL+'/functions/v1/withings-auth', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY},
+        body: JSON.stringify({ action:'get_auth_url', redirect_uri: redirectUri }),
+      });
+      if (!res.ok) { setWError('Edge Function error: ' + res.status + ' — is withings-auth deployed?'); setWConnecting(false); return; }
+      const d = await res.json();
+      if (d.url) { window.location.href = d.url; }
+      else { setWError(d.error || JSON.stringify(d)); setWConnecting(false); }
+    } catch(e) {
+      setWError('Network error — is the withings-auth Edge Function deployed? ' + e.message);
+      setWConnecting(false);
+    }
   };
 
   const syncWithings = async () => {
@@ -4298,7 +4309,10 @@ function HealthPage() {
             <>
               <div className="meta" style={{marginBottom:10}}>Connect Withings to automatically sync weight, body fat, muscle mass and blood pressure. No Shortcut needed — pulls directly via OAuth.</div>
               <div className="meta" style={{marginBottom:8,color:'var(--amber)'}}>First: add WITHINGS_CLIENT_ID and WITHINGS_CLIENT_SECRET to your Supabase Edge Function secrets, then deploy withings-auth and withings-sync functions.</div>
-              <button className="btn btn-primary" style={{justifyContent:'center'}} onClick={connectWithings}>Connect Withings</button>
+              <button className="btn btn-primary" style={{justifyContent:'center'}} onClick={connectWithings} disabled={wConnecting}>
+                {wConnecting ? 'Connecting…' : 'Connect Withings'}
+              </button>
+              {wError && <div className="meta" style={{marginTop:8,color:'var(--red,#e55)',wordBreak:'break-all'}}>⚠ {wError}</div>}
             </>
           )}
         </div>
