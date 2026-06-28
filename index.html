@@ -3983,17 +3983,46 @@ function HelmSettingsPage() {
 function ProposedActions({ changes, sourceRequest }) {
   // status per card: 'pending' | 'approved' | 'rejected' | 'failed'
   const [states, setStates] = useState(() => changes.map(c => ({ status:'pending', edited:{...c}, editing:false, note:'' })));
+  const [names, setNames] = useState({}); // {task_id/project_id/decision_id: name}
+
+  // Resolve human names for any ids referenced in the proposals
+  useEffect(()=>{
+    (async ()=>{
+      const taskIds = changes.filter(c=>c.task_id).map(c=>c.task_id);
+      const projIds = changes.filter(c=>c.project_id).map(c=>c.project_id);
+      const decIds  = changes.filter(c=>c.decision_id).map(c=>c.decision_id);
+      const out = {};
+      try {
+        if (taskIds.length) {
+          const {data} = await supabase.from('tasks').select('id,name,status,priority,due_date').in('id',taskIds);
+          (data||[]).forEach(t=>out[t.id]={...t});
+        }
+        if (projIds.length) {
+          const {data} = await supabase.from('projects').select('id,name').in('id',projIds);
+          (data||[]).forEach(p=>out[p.id]={name:p.name});
+        }
+        if (decIds.length) {
+          const {data} = await supabase.from('decisions').select('id,name').in('id',decIds);
+          (data||[]).forEach(d=>out[d.id]={name:d.name});
+        }
+      } catch(e) {}
+      setNames(out);
+    })();
+  },[]);
 
   // Human-readable description of what a change will do
   const describe = (c) => {
+    const tName = c.task_id && names[c.task_id]?.name;
+    const pName = c.project_id && names[c.project_id]?.name;
+    const dName = c.decision_id && names[c.decision_id]?.name;
     switch (c.type) {
       case 'create_task': return `Create a task: "${c.name}"`;
-      case 'update_project_next_action': return `Set next action on a project: "${c.task_name || c.name}"`;
-      case 'update_task_priority': return `Change a task's priority to ${c.priority}`;
+      case 'update_project_next_action': return `Set next action${pName?' on "'+pName+'"':' on a project'}: "${c.task_name || c.name}"`;
+      case 'update_task_priority': return tName ? `Change "${tName}" priority to ${c.priority}` : `Change a task's priority to ${c.priority}`;
       case 'create_waiting_for': return `Track waiting for: "${c.name}"${c.waiting_on ? ` (from ${c.waiting_on})` : ''}`;
-      case 'update_decision_status': return `Mark a decision as ${c.status}`;
+      case 'update_decision_status': return dName ? `Mark "${dName}" as ${c.status}` : `Mark a decision as ${c.status}`;
       case 'create_calendar_block': return `Block calendar: "${c.title}" ${c.date || ''} ${c.start_time || ''}–${c.end_time || ''}`;
-      case 'archive_project': return `Archive a project`;
+      case 'archive_project': return pName ? `Archive "${pName}"` : `Archive a project`;
       default: return c.type;
     }
   };
@@ -4042,6 +4071,27 @@ function ProposedActions({ changes, sourceRequest }) {
     setCard(i, { status:'rejected' });
   };
 
+  // Mark the referenced task complete instead of changing priority
+  const markComplete = async (i) => {
+    const c = states[i].edited;
+    if (!c.task_id) return;
+    setCard(i, { status:'applying' });
+    try {
+      const { error } = await supabase.from('tasks').update({ status:'done', completed_at:new Date().toISOString() }).eq('id', c.task_id);
+      if (error) { setCard(i,{status:'failed', note:error.message}); return; }
+      await logProposal({
+        action_type: 'complete_task',
+        explanation: 'Marked complete instead of raising priority',
+        payload: changes[i],
+        final_payload: { task_id:c.task_id, status:'done' },
+        status: 'edited_approved',
+        result_ref: c.task_id,
+        source_request: sourceRequest,
+      });
+      setCard(i, { status:'approved', note:'Marked complete ✓', editing:false });
+    } catch(e) { setCard(i,{status:'failed', note:String(e)}); }
+  };
+
   return (
     <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)'}}>
       <div className="section-title" style={{marginTop:0}}>Proposed by {ASSISTANT_NAME}</div>
@@ -4085,8 +4135,11 @@ function ProposedActions({ changes, sourceRequest }) {
 
             {/* Action buttons */}
             {card.status==='pending' && (
-              <div className="row" style={{gap:6,marginTop:8}}>
+              <div className="row" style={{gap:6,marginTop:8,flexWrap:'wrap'}}>
                 <button className="btn btn-primary btn-sm" onClick={()=>approve(i, card.editing)}>Approve</button>
+                {(c.type==='update_task_priority' && c.task_id && names[c.task_id]?.status!=='done') && (
+                  <button className="btn btn-ghost btn-sm" style={{color:'var(--green)'}} onClick={()=>markComplete(i)}>✓ Mark complete</button>
+                )}
                 <button className="btn btn-ghost btn-sm" onClick={()=>setCard(i,{editing:!card.editing})}>{card.editing?'Done editing':'Edit'}</button>
                 <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={()=>reject(i)}>Reject</button>
               </div>
