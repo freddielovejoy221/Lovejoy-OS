@@ -5861,35 +5861,50 @@ function HelmPage() {
   };
 
   const actions = [
-    { id:'plan_my_day',           label:'Plan My Day',          icon:'⚡', desc:'What to do today, around your calendar' },
-    { id:'weekly_review',         label:'Weekly Review',         icon:'📋', desc:'Step back: what is slipping, what needs deciding' },
-    { id:'pressure_test_decision',label:'Pressure Test Decision',icon:'🤔', desc:'Sharpen your thinking on an open decision' },
-    { id:'tidy_my_system',        label:'Tidy My System',        icon:'🧹', desc:'Find stale projects and clutter to clear' },
+    { id:'plan_my_day',           label:'Plan My Day',          icon:'⚡', desc:'What to do today, around your calendar', accent:'#4f7cff', tint:'rgba(79,124,255,0.12)' },
+    { id:'weekly_review',         label:'Weekly Review',         icon:'📋', desc:'Step back: what is slipping, what needs deciding', accent:'#7c5cfc', tint:'rgba(124,92,252,0.12)' },
+    { id:'pressure_test_decision',label:'Pressure Test',         icon:'🤔', desc:'Sharpen your thinking on an open decision', accent:'#f59e0b', tint:'rgba(245,158,11,0.12)' },
+    { id:'tidy_my_system',        label:'Tidy My System',        icon:'🧹', desc:'Find stale projects and clutter to clear', accent:'#22c55e', tint:'rgba(34,197,94,0.12)' },
   ];
 
   return (
     <div className="page">
-      <h1 style={{fontSize:20,fontWeight:700,marginBottom:4}}>{ASSISTANT_NAME}</h1>
-      <div className="meta" style={{marginBottom:16}}>Your calm steering system. {ASSISTANT_NAME} reads your world, tells you what matters, and points you at what's next.</div>
+      <div className="hero" style={{background:'linear-gradient(135deg, rgba(79,124,255,0.20), rgba(124,92,252,0.14) 55%, rgba(34,197,94,0.05))'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,position:'relative'}}>
+          <div style={{fontSize:30}}>🧭</div>
+          <div>
+            <div className="hero-name" style={{fontSize:22}}>{ASSISTANT_NAME}</div>
+            <div className="hero-greet" style={{marginTop:1}}>Your calm steering system</div>
+          </div>
+        </div>
+      </div>
 
-      <div style={{fontSize:13,fontWeight:600,color:'var(--muted)',marginBottom:8}}>Ask {ASSISTANT_NAME}</div>
+      <div className="section-title" style={{marginTop:0}}>Ask {ASSISTANT_NAME}</div>
 
-      {/* Action buttons */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
-        {actions.map(a=>(
-          <button key={a.id}
-            className="card"
-            style={{cursor:'pointer',textAlign:'left',border:activeType===a.id?'1px solid var(--accent)':'1px solid var(--border)',background:activeType===a.id?'rgba(79,124,255,0.08)':'var(--surface)'}}
-            onClick={()=>{
-              if (a.id==='pressure_test_decision') { setActiveType(a.id); setPickDecision(true); setResult(null); }
-              else run(a.id);
-            }}
-            disabled={loading}>
-            <div style={{fontSize:20,marginBottom:6}}>{a.icon}</div>
-            <div className="name" style={{fontSize:13,marginBottom:2}}>{a.label}</div>
-            <div className="meta" style={{fontSize:11}}>{a.desc}</div>
-          </button>
-        ))}
+      {/* Action tiles */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18}}>
+        {actions.map(a=>{
+          const isActive = activeType===a.id;
+          return (
+            <button key={a.id}
+              style={{cursor:'pointer',textAlign:'left',padding:'14px',borderRadius:14,position:'relative',overflow:'hidden',
+                      border:'1px solid '+(isActive?a.accent:'var(--border)'),
+                      background:isActive?a.tint:'var(--surface)',
+                      transition:'transform .12s, border-color .12s',opacity:loading&&!isActive?0.5:1}}
+              onMouseDown={e=>e.currentTarget.style.transform='scale(0.97)'}
+              onMouseUp={e=>e.currentTarget.style.transform='scale(1)'}
+              onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}
+              onClick={()=>{
+                if (a.id==='pressure_test_decision') { setActiveType(a.id); setPickDecision(true); setResult(null); }
+                else run(a.id);
+              }}
+              disabled={loading}>
+              <div style={{width:42,height:42,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,marginBottom:10,background:a.tint,border:'1px solid '+a.accent+'44'}}>{a.icon}</div>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{a.label}</div>
+              <div className="meta" style={{fontSize:11,lineHeight:1.4}}>{a.desc}</div>
+            </button>
+          );
+        })}
       </div>
 
       {/* Helm History toggle */}
@@ -5987,9 +6002,11 @@ function HelmPage() {
 
       {/* Loading */}
       {loading && (
-        <div className="card" style={{textAlign:'center',padding:'28px'}}>
-          <div className="spinner" style={{margin:'0 auto 12px'}}/>
-          <div className="meta">{ASSISTANT_NAME} is thinking through your system…</div>
+        <div className="card" style={{textAlign:'center',padding:'32px 20px',background:'linear-gradient(135deg, rgba(79,124,255,0.06), rgba(124,92,252,0.04))'}}>
+          <div style={{fontSize:32,marginBottom:10}}>{actions.find(a=>a.id===activeType)?.icon || '🧭'}</div>
+          <div className="spinner" style={{margin:'0 auto 14px'}}/>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:3}}>{actions.find(a=>a.id===activeType)?.label || ASSISTANT_NAME}</div>
+          <div className="meta">{ASSISTANT_NAME} is reading your world…</div>
         </div>
       )}
 
@@ -6008,9 +6025,12 @@ function HelmPage() {
       {result && !result.error && (
         <div>
           {result.summary && (
-            <div className="card" style={{marginBottom:10}}>
-              <div className="section-title" style={{marginTop:0}}>Summary</div>
-              <div style={{fontSize:14,lineHeight:1.55}}>{result.summary}</div>
+            <div className="card" style={{marginBottom:10,background:'linear-gradient(135deg, rgba(79,124,255,0.07), transparent 70%)',borderLeft:'3px solid var(--accent)'}}>
+              <div className="row" style={{gap:8,marginBottom:8}}>
+                <div style={{width:26,height:26,borderRadius:8,background:'rgba(79,124,255,0.15)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,flexShrink:0}}>🧭</div>
+                <div style={{fontSize:13,fontWeight:700,color:'var(--accent)'}}>{actions.find(a=>a.id===result.type)?.label || ASSISTANT_NAME}</div>
+              </div>
+              <div style={{fontSize:14,lineHeight:1.6}}>{result.summary}</div>
             </div>
           )}
 
