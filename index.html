@@ -282,6 +282,14 @@ function calcReadiness(snap, travelContext, weatherContext) {
     else { score -= 20; drivers.push('Short sleep (' + snap.sleep_duration_hours + 'h)'); }
   } else missing.push('sleep');
 
+  // Sleep score (Withings — richer than duration alone)
+  if (snap.sleep_score != null) {
+    metricCount++;
+    if (snap.sleep_score >= 80)      { score += 10; }
+    else if (snap.sleep_score >= 60)  { score += 3; }
+    else if (snap.sleep_score < 45)   { score -= 10; drivers.push('Low sleep score (' + snap.sleep_score + ')'); }
+  }
+
   // Body Battery (Garmin via Apple Health — may be absent)
   const bb = snap.body_battery_morning ?? snap.body_battery_current;
   if (bb != null) {
@@ -933,6 +941,8 @@ async function buildHealthContext(travelContext = null) {
       data_quality: dq.label, recovery_date: recoverySnap?.date, recovery_is_today: recoverySnap?.date===todayStr,
       provider: recoverySnap?.provider,
       sleep_hours: recoverySnap?.sleep_duration_hours, sleep_score: recoverySnap?.sleep_score,
+      sleep_efficiency: recoverySnap?.sleep_efficiency, deep_sleep_minutes: recoverySnap?.deep_sleep_minutes,
+      rem_sleep_minutes: recoverySnap?.rem_sleep_minutes,
       resting_hr: recoverySnap?.resting_heart_rate, hrv_value: recoverySnap?.hrv_value, hrv_status: recoverySnap?.hrv_status,
       respiratory_rate: recoverySnap?.respiratory_rate, body_battery: recoverySnap?.body_battery_morning,
       stress_level: recoverySnap?.stress_level, vo2_max: recoverySnap?.vo2_max,
@@ -4351,6 +4361,10 @@ function HealthPage() {
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:10}}>
                   {[
                     ['😴 Sleep',          latest.sleep_duration_hours!=null ? latest.sleep_duration_hours+'h' : null],
+                    ['⭐ Sleep score',    latest.sleep_score!=null ? latest.sleep_score : null],
+                    ['🌊 Deep sleep',     latest.deep_sleep_minutes!=null ? latest.deep_sleep_minutes+' min' : null],
+                    ['💤 REM sleep',      latest.rem_sleep_minutes!=null ? latest.rem_sleep_minutes+' min' : null],
+                    ['📊 Sleep effic.',   latest.sleep_efficiency!=null ? latest.sleep_efficiency+'%' : null],
                     ['💓 Resting HR',     latest.resting_heart_rate!=null ? latest.resting_heart_rate+' bpm' : null],
                     ['📈 HRV',            latest.hrv_value!=null ? latest.hrv_value+' ms' : null],
                     ['🫁 Respiratory',    latest.respiratory_rate!=null ? latest.respiratory_rate+' brpm' : null],
