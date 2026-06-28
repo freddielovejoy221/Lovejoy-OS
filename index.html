@@ -5769,9 +5769,13 @@ function SourceSummary({ snap, compact }) {
     const wxTag = wx
       ? (wx.is_stale ? <span style={{color:'var(--amber)'}}>⚠ Weather stale</span> : <span>Weather ✓</span>)
       : <span style={{color:'var(--muted)'}}>No weather</span>;
+    const h = snap.health;
+    const hTag = h?.included
+      ? <span>Health: {(h.readiness||'?').toUpperCase()}{h.confidence?' ('+h.confidence+')':''}</span>
+      : null;
     return (
       <div style={{fontSize:10,color:'var(--muted)',marginTop:5,lineHeight:1.5}}>
-        Sources: {parts.join(' · ')}{wx !== undefined ? <> · {wxTag}</> : null}
+        Sources: {parts.join(' · ')}{wx !== undefined ? <> · {wxTag}</> : null}{hTag ? <> · {hTag}</> : null}
       </div>
     );
   }
@@ -5806,6 +5810,16 @@ function SourceSummary({ snap, compact }) {
           <span style={{color: snap.travel.included ? (snap.travel.unknown_journey_count>0?'var(--amber)':'var(--text)') : 'var(--muted)'}}>
             {snap.travel.included
               ? snap.travel.suggestion_count + ' events' + (snap.travel.unknown_journey_count>0 ? ' · ' + snap.travel.unknown_journey_count + ' unknown journey' : '')
+              : 'Not included'}
+          </span>
+        </div>
+      )}
+      {snap.health && (
+        <div className="row-between" style={{fontSize:11,marginBottom:2}}>
+          <span style={{color:'var(--muted)'}}>Health & Recovery</span>
+          <span style={{color: snap.health.included ? (snap.health.data_quality==='good'?'var(--text)':'var(--amber)') : 'var(--muted)'}}>
+            {snap.health.included
+              ? (snap.health.readiness||'?').toUpperCase() + ' · ' + (snap.health.data_quality||'?') + (snap.health.recovery_is_today===false ? ' · '+(snap.health.recovery_date||'old') : '')
               : 'Not included'}
           </span>
         </div>
