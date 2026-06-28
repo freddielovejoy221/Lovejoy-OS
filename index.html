@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>Lovejoy OS</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -27,7 +28,7 @@
       --nav-h:     64px;
     }
 
-    html, body, #root { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    html, body, #root { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color-scheme: dark; }
 
     /* ── LAYOUT ── */
     .app { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
@@ -4130,61 +4131,82 @@ function ProposedActions({ changes, sourceRequest }) {
     } catch(e) { setCard(i,{status:'failed', note:String(e)}); }
   };
 
+  // Visual identity per proposal type
+  const typeMeta = {
+    create_task:                {icon:'✅', colour:'#4f7cff', label:'New task'},
+    update_project_next_action: {icon:'🎯', colour:'#7c5cfc', label:'Next action'},
+    update_task_priority:       {icon:'⬆️', colour:'#f59e0b', label:'Priority change'},
+    create_waiting_for:         {icon:'⏳', colour:'#7c5cfc', label:'Waiting for'},
+    update_decision_status:     {icon:'⚖️', colour:'#22c55e', label:'Decision'},
+    create_calendar_block:      {icon:'📅', colour:'#039be5', label:'Calendar block'},
+    archive_project:            {icon:'📦', colour:'#7b82a0', label:'Archive'},
+  };
+
   return (
-    <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)'}}>
-      <div className="section-title" style={{marginTop:0}}>Proposed by {ASSISTANT_NAME}</div>
-      <div className="meta" style={{marginBottom:10}}>Nothing changes until you approve. Edit any proposal first if you want to tweak it.</div>
+    <div className="card" style={{marginBottom:10,borderLeft:'3px solid var(--accent2)',background:'linear-gradient(135deg, rgba(124,92,252,0.06), transparent 70%)'}}>
+      <div className="row" style={{gap:8,marginBottom:6}}>
+        <div style={{width:26,height:26,borderRadius:8,background:'rgba(124,92,252,0.15)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,flexShrink:0}}>🧭</div>
+        <div style={{fontSize:13,fontWeight:700,color:'var(--accent2)'}}>Proposed by {ASSISTANT_NAME}</div>
+      </div>
+      <div className="meta" style={{marginBottom:12}}>Nothing changes until you approve. Edit any proposal first if you want to tweak it.</div>
 
       {states.map((card, i) => {
         const c = card.edited;
+        const tm = typeMeta[c.type] || {icon:'•', colour:'var(--muted)', label:(c.type||'change').replace(/_/g,' ')};
+        const done = card.status==='approved';
+        const dead = card.status==='rejected';
         return (
-          <div key={i} className="card-sm" style={{background:'var(--surface2)',marginBottom:8}}>
-            <div className="row" style={{gap:6,marginBottom:4}}>
-              <span className="pill pill-purple">{(c.type||'change').replace(/_/g,' ')}</span>
-              {card.status==='approved' && <span className="pill pill-green">✓ Approved</span>}
-              {card.status==='rejected' && <span className="pill pill-muted">Rejected</span>}
-              {card.status==='failed' && <span className="pill pill-red">Failed</span>}
-            </div>
+          <div key={i} style={{background:'var(--surface2)',borderRadius:12,marginBottom:8,padding:'12px',borderLeft:'3px solid '+(done?'var(--green)':dead?'var(--border)':tm.colour),opacity:dead?0.55:1}}>
+            <div className="row" style={{gap:10,alignItems:'flex-start'}}>
+              <div style={{width:34,height:34,borderRadius:10,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,background:done?'rgba(34,197,94,0.15)':'rgba(124,92,252,0.08)',border:'1px solid '+(done?'rgba(34,197,94,0.3)':tm.colour+'33')}}>{done?'✓':tm.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div className="row-between" style={{marginBottom:2}}>
+                  <span style={{fontSize:10,fontWeight:700,color:tm.colour,textTransform:'uppercase',letterSpacing:'0.05em'}}>{tm.label}</span>
+                  {done && <span className="pill pill-green" style={{fontSize:9}}>Approved</span>}
+                  {dead && <span className="pill pill-muted" style={{fontSize:9}}>Rejected</span>}
+                  {card.status==='failed' && <span className="pill pill-red" style={{fontSize:9}}>Failed</span>}
+                </div>
+                <div style={{fontSize:13,fontWeight:600,color:'var(--text)',lineHeight:1.4}}>{describe(c)}</div>
+                {c.rationale && <div className="meta" style={{marginTop:4,lineHeight:1.45}}>{c.rationale}</div>}
 
-            <div style={{fontSize:13,marginBottom:2}}>{describe(c)}</div>
-            {c.rationale && <div className="meta" style={{marginBottom:6}}>{c.rationale}</div>}
-
-            {/* Editing form */}
-            {card.editing && card.status==='pending' && (
-              <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid var(--border)'}}>
-                {editableFields(c.type).map(([key,label,kind])=>(
-                  <div className="field" key={key} style={{marginBottom:8}}>
-                    <label className="label">{label}</label>
-                    {kind==='priority' ? (
-                      <select className="input" value={c[key]||'medium'} onChange={e=>setField(i,key,e.target.value)}>
-                        <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
-                      </select>
-                    ) : kind==='decstatus' ? (
-                      <select className="input" value={c[key]||'decided'} onChange={e=>setField(i,key,e.target.value)}>
-                        <option value="decided">Decided</option><option value="deferred">Deferred</option><option value="dropped">Dropped</option>
-                      </select>
-                    ) : (
-                      <input className="input" type={kind==='date'?'date':kind==='time'?'time':'text'} value={c[key]||''} onChange={e=>setField(i,key,e.target.value)}/>
-                    )}
+                {/* Editing form */}
+                {card.editing && card.status==='pending' && (
+                  <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+                    {editableFields(c.type).map(([key,label,kind])=>(
+                      <div className="field" key={key} style={{marginBottom:8}}>
+                        <label className="label">{label}</label>
+                        {kind==='priority' ? (
+                          <select className="input" value={c[key]||'medium'} onChange={e=>setField(i,key,e.target.value)}>
+                            <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+                          </select>
+                        ) : kind==='decstatus' ? (
+                          <select className="input" value={c[key]||'decided'} onChange={e=>setField(i,key,e.target.value)}>
+                            <option value="decided">Decided</option><option value="deferred">Deferred</option><option value="dropped">Dropped</option>
+                          </select>
+                        ) : (
+                          <input className="input" type={kind==='date'?'date':kind==='time'?'time':'text'} value={c[key]||''} onChange={e=>setField(i,key,e.target.value)}/>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-
-            {/* Action buttons */}
-            {card.status==='pending' && (
-              <div className="row" style={{gap:6,marginTop:8,flexWrap:'wrap'}}>
-                <button className="btn btn-primary btn-sm" onClick={()=>approve(i, card.editing)}>Approve</button>
-                {(c.type==='update_task_priority' && c.task_id && names[c.task_id]?.status!=='done') && (
-                  <button className="btn btn-ghost btn-sm" style={{color:'var(--green)'}} onClick={()=>markComplete(i)}>✓ Mark complete</button>
                 )}
-                <button className="btn btn-ghost btn-sm" onClick={()=>setCard(i,{editing:!card.editing})}>{card.editing?'Done editing':'Edit'}</button>
-                <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={()=>reject(i)}>Reject</button>
+
+                {/* Action buttons */}
+                {card.status==='pending' && (
+                  <div className="row" style={{gap:6,marginTop:10,flexWrap:'wrap'}}>
+                    <button className="btn btn-primary btn-sm" onClick={()=>approve(i, card.editing)}>Approve</button>
+                    {(c.type==='update_task_priority' && c.task_id && names[c.task_id]?.status!=='done') && (
+                      <button className="btn btn-ghost btn-sm" style={{color:'var(--green)'}} onClick={()=>markComplete(i)}>✓ Mark complete</button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" onClick={()=>setCard(i,{editing:!card.editing})}>{card.editing?'Done':'Edit'}</button>
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--red)'}} onClick={()=>reject(i)}>Reject</button>
+                  </div>
+                )}
+                {card.status==='applying' && <div className="meta" style={{marginTop:6}}>Applying…</div>}
+                {card.status==='failed' && <div className="meta" style={{marginTop:6,color:'var(--red)'}}>{card.note}</div>}
+                {done && <div className="meta" style={{marginTop:6,color:'var(--green)'}}>{card.note||'Done — added to your system.'}</div>}
               </div>
-            )}
-            {card.status==='applying' && <div className="meta" style={{marginTop:6}}>Applying…</div>}
-            {card.status==='failed' && <div className="meta" style={{marginTop:6,color:'var(--red)'}}>{card.note}</div>}
-            {card.status==='approved' && <div className="meta" style={{marginTop:6,color:'var(--green)'}}>Done — added to your system.</div>}
+            </div>
           </div>
         );
       })}
@@ -6030,7 +6052,7 @@ function HelmPage() {
                 <div style={{width:26,height:26,borderRadius:8,background:'rgba(79,124,255,0.15)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,flexShrink:0}}>🧭</div>
                 <div style={{fontSize:13,fontWeight:700,color:'var(--accent)'}}>{actions.find(a=>a.id===result.type)?.label || ASSISTANT_NAME}</div>
               </div>
-              <div style={{fontSize:14,lineHeight:1.6}}>{result.summary}</div>
+              <div style={{fontSize:14,lineHeight:1.6,color:'var(--text)'}}>{result.summary}</div>
             </div>
           )}
 
@@ -6498,11 +6520,25 @@ function DashboardPage({ user, onNavigate }) {
     _wxSettings = wsCfg;
     _wxLocation = wloc;
 
-    // Calendar — non-blocking
-    fetchCalendarEvents(1).then(r=>{
+    // Calendar — rolling next-24-hours window (non-blocking)
+    fetchCalendarEvents(2).then(r=>{
       if (r && r.events) {
-        const todayKey = localDateKey();
-        setTodayEvents(r.events.filter(e=>(e.start||'').startsWith(todayKey)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
+        const nowMs = Date.now();
+        const horizonMs = nowMs + 24*60*60*1000;
+        const upcoming = r.events.filter(e=>{
+          if (!e.start) return false;
+          if (e.allDay) {
+            // Keep all-day events for today and tomorrow
+            const todayKey = localDateKey();
+            const tmrwKey = localDateKey(new Date(nowMs + 86400000));
+            return e.start.startsWith(todayKey) || e.start.startsWith(tmrwKey);
+          }
+          const startMs = new Date(e.start).getTime();
+          const endMs = e.end ? new Date(e.end).getTime() : startMs;
+          // Include events that haven't ended yet and start within the next 24h
+          return endMs >= nowMs && startMs <= horizonMs;
+        }).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+        setTodayEvents(upcoming);
       }
       setCalState(r?.error || 'ok');
     });
@@ -6766,20 +6802,31 @@ function DashboardPage({ user, onNavigate }) {
         </div>
       ) : todayEvents.length > 0 ? (
         <div style={{marginBottom:18}}>
-          <div className="section-title" style={{marginTop:0}}>Today's schedule</div>
-          {todayEvents.map(e=>(
-            <div key={e.id} className="card-sm" style={{borderLeft:`3px solid ${e.colour||'var(--accent)'}`}}>
-              <div className="name" style={{fontSize:13}}>{e.title}</div>
-              <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
-            </div>
-          ))}
+          <div className="section-title" style={{marginTop:0}}>Next 24 hours</div>
+          {todayEvents.map(e=>{
+            const todayKey = localDateKey();
+            const evtKey = (e.start||'').slice(0,10);
+            const isTomorrow = evtKey !== todayKey;
+            const startMs = e.allDay ? null : new Date(e.start).getTime();
+            const inProgress = startMs!=null && e.end && new Date(e.end).getTime() >= Date.now() && startMs <= Date.now();
+            return (
+              <div key={e.id} className="card-sm" style={{borderLeft:`3px solid ${e.colour||'var(--accent)'}`}}>
+                <div className="row-between">
+                  <div className="name" style={{fontSize:13}}>{e.title}</div>
+                  {inProgress && <span className="pill pill-green" style={{fontSize:9}}>Now</span>}
+                  {isTomorrow && !inProgress && <span className="pill pill-muted" style={{fontSize:9}}>Tomorrow</span>}
+                </div>
+                <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
+              </div>
+            );
+          })}
           <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:4}} onClick={()=>onNavigate('calendar')}>
             View week →
           </button>
         </div>
       ) : calState === 'ok' ? (
         <div className="card-sm" style={{marginBottom:18,opacity:0.7}}>
-          <div className="meta">☀️ Nothing scheduled today</div>
+          <div className="meta">☀️ Nothing in the next 24 hours</div>
         </div>
       ) : null}
 
