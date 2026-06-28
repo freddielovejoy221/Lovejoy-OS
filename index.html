@@ -1613,21 +1613,24 @@ function TasksPage() {
           {tasks.map(t => {
             const area = areaMap[t.area_id];
             const proj = projMap[t.project_id];
+            const pBorder = t.priority==='high'?'var(--red)':t.priority==='medium'?'var(--amber)':'var(--border)';
+            const overdue = t.due_date && isOverdue(t.due_date);
+            const dueSoon = t.due_date && isDueSoon(t.due_date);
+            const meta = [area && `${area.icon} ${area.name}`, proj && `📁 ${proj.name}`].filter(Boolean).join('  ·  ');
             return (
-              <div key={t.id} className="card-sm" style={{cursor:'pointer'}} onClick={()=>{setEditing(t);setForm({...t});setModal('task');}}>
+              <div key={t.id} className="card-sm" style={{cursor:'pointer',borderLeft:`3px solid ${pBorder}`}} onClick={()=>{setEditing(t);setForm({...t});setModal('task');}}>
                 <div className="row-between">
                   <div style={{flex:1,minWidth:0}}>
-                    <div className="row" style={{gap:6,marginBottom:t.is_next_action?4:0}}>
-                      {t.is_next_action && <span style={{color:'var(--accent)',fontSize:11,fontWeight:600}}>⚡ NEXT</span>}
+                    <div className="row" style={{gap:6}}>
+                      {t.is_next_action && <span style={{color:'var(--accent)',fontSize:11,fontWeight:700}}>⚡</span>}
                       <div className="name" style={{fontSize:13}}>{t.name}</div>
                     </div>
-                    <div className="tag-row">
-                      {priorityPill(t.priority)}
-                      {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
-                      {proj && <span className="pill pill-muted">📁 {proj.name}</span>}
-                      {t.due_date && <span className={`pill ${isOverdue(t.due_date)?'pill-red':isDueSoon(t.due_date)?'pill-amber':'pill-muted'}`}>
-                        {isOverdue(t.due_date)?'Overdue':'Due '}{fmtDate(t.due_date)}
+                    <div className="row" style={{gap:8,marginTop:3,flexWrap:'wrap'}}>
+                      {meta && <span className="meta" style={{fontSize:11}}>{meta}</span>}
+                      {(overdue||dueSoon) && <span className={`pill ${overdue?'pill-red':'pill-amber'}`} style={{fontSize:10}}>
+                        {overdue?'Overdue':'Due'} {fmtDate(t.due_date)}
                       </span>}
+                      {t.due_date && !overdue && !dueSoon && <span className="meta" style={{fontSize:11}}>Due {fmtDate(t.due_date)}</span>}
                     </div>
                   </div>
                   <button className="btn btn-ghost btn-sm btn-icon" style={{marginLeft:8,flexShrink:0,borderRadius:'50%'}} onClick={e=>completeTask(t.id,e)}>
@@ -6113,7 +6116,7 @@ function CalendarPage() {
         <>
           {todayEvents.length===0 && <div className="empty"><div className="empty-icon">☀️</div>Nothing scheduled today</div>}
           {todayEvents.map(e=>(
-            <div key={e.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
+            <div key={e.id} className="card-sm" style={{borderLeft:`3px solid ${e.colour||'var(--accent)'}`}}>
               <div className="row-between">
                 <div style={{flex:1,minWidth:0}}>
                   <div className="name" style={{fontSize:13}}>{e.title}</div>
@@ -6141,7 +6144,7 @@ function CalendarPage() {
             </div>
             {dayEvents.length===0 && <div className="card-sm" style={{opacity:0.6}}><div className="meta">No events</div></div>}
             {dayEvents.map(e=>(
-              <div key={e.id} className="card-sm">
+              <div key={e.id} className="card-sm" style={{borderLeft:`3px solid ${e.colour||'var(--border)'}`}}>
                 <div className="name" style={{fontSize:13}}>{e.title}</div>
                 <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
               </div>
@@ -6736,7 +6739,7 @@ function DashboardPage({ user, onNavigate }) {
         <div style={{marginBottom:18}}>
           <div className="section-title" style={{marginTop:0}}>Today's schedule</div>
           {todayEvents.map(e=>(
-            <div key={e.id} className="card-sm" style={{borderLeft:'3px solid var(--accent)'}}>
+            <div key={e.id} className="card-sm" style={{borderLeft:`3px solid ${e.colour||'var(--accent)'}`}}>
               <div className="name" style={{fontSize:13}}>{e.title}</div>
               <div className="meta">{e.allDay?'All day':`${fmtTime(e.start)} – ${fmtTime(e.end)}`}{e.location?` · 📍 ${e.location}`:''}</div>
             </div>
