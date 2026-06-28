@@ -6908,24 +6908,34 @@ function App() {
     { id:'more',      label:'More',          icon:'layers' },
   ];
 
-  const moreItems = [
-    { id:'helm',           label:ASSISTANT_NAME,              icon:'zap' },
-    { id:'helmsettings',   label:ASSISTANT_NAME+' Settings',  icon:'box' },
-    { id:'travel',         label:'Travel Buffer',             icon:'clock' },
-    { id:'travelsettings', label:'Travel Settings',           icon:'box' },
-    { id:'health',         label:'Health & Recovery',         icon:'alert' },
-    { id:'prepitems',      label:'Prep Item Library',         icon:'box' },
-    { id:'weathersettings',label:'Weather & Outdoor',         icon:'alert' },
-    { id:'calendar',       label:'Calendar',                  icon:'clock' },
-    { id:'projects',       label:'Projects',                  icon:'folder' },
-    { id:'areas',          label:'Areas & Roles',             icon:'layers' },
-    { id:'decisions',      label:'Decisions & Assets',        icon:'box' },
-    { id:'reviews',        label:'Weekly Review',             icon:'clock' },
-    { id:'roadmap',        label:'Roadmap Queue',             icon:'alert' },
-    { id:'systemhealth',   label:'System Health',             icon:'alert' },
-    { id:'security',       label:'Security & Privacy',        icon:'alert' },
-    { id:'features',       label:'Features Guide',            icon:'alert' },
-    { id:'debug',          label:'Debug Log',                 icon:'alert' },
+  const moreGroups = [
+    { title:'Daily', items:[
+      { id:'helm',           label:ASSISTANT_NAME,        icon:'zap',    desc:'Plan your day, run reviews' },
+      { id:'calendar',       label:'Calendar',            icon:'clock',  desc:'Week view and events' },
+      { id:'travel',         label:'Travel Buffer',       icon:'clock',  desc:'Leave-by times and prep' },
+    ]},
+    { title:'Health & Body', items:[
+      { id:'health',         label:'Health & Recovery',   icon:'alert',  desc:'Readiness, sleep, vitals, goals' },
+      { id:'weathersettings',label:'Weather & Outdoor',   icon:'alert',  desc:'Forecast and activity risk' },
+    ]},
+    { title:'Planning', items:[
+      { id:'projects',       label:'Projects',            icon:'folder', desc:'Active projects and next actions' },
+      { id:'areas',          label:'Areas & Roles',       icon:'layers', desc:'Life areas and responsibilities' },
+      { id:'decisions',      label:'Decisions & Assets',  icon:'box',    desc:'Open decisions, tracked assets' },
+      { id:'reviews',        label:'Weekly Review',       icon:'clock',  desc:'Reflect and reset each week' },
+      { id:'roadmap',        label:'Roadmap Queue',       icon:'alert',  desc:'What to build next' },
+    ]},
+    { title:'Settings', items:[
+      { id:'helmsettings',   label:ASSISTANT_NAME+' Settings', icon:'box', desc:'Tune how '+ASSISTANT_NAME+' works' },
+      { id:'travelsettings', label:'Travel Settings',     icon:'box',    desc:'Defaults, buffers, locations' },
+      { id:'prepitems',      label:'Prep Item Library',   icon:'box',    desc:'Reusable packing items' },
+    ]},
+    { title:'System', items:[
+      { id:'systemhealth',   label:'System Health',       icon:'alert',  desc:'Integrations and sync status' },
+      { id:'security',       label:'Security & Privacy',  icon:'alert',  desc:'Access and data controls' },
+      { id:'features',       label:'Features Guide',      icon:'alert',  desc:'What the app can do' },
+      { id:'debug',          label:'Debug Log',           icon:'alert',  desc:'Technical event log' },
+    ]},
   ];
 
   const renderPage = () => {
@@ -6942,7 +6952,7 @@ function App() {
     if (page==='reviews')         return <ReviewsPage/>;
     if (page==='travel')         return <TravelPage/>;
     if (page==='travelsettings') return <TravelSettingsPage/>;
-    if (page==='health')         return <HealthPage/>;;
+    if (page==='health')         return <HealthPage/>;
     if (page==='prepitems')      return <PrepItemLibraryPage/>;
     if (page==='roadmap')        return <RoadmapQueuePage/>;
     if (page==='systemhealth')    return <SystemHealthPage onNavigate={setPage}/>;
@@ -6951,20 +6961,29 @@ function App() {
     if (page==='debug')           return <DebugPage/>;
     if (page==='more') return (
       <div className="page">
-        <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>More</h1>
-        {moreItems.map(item=>(
-          <div key={item.id} className="card" style={{cursor:'pointer',marginBottom:8}} onClick={()=>setPage(item.id)}>
-            <div className="row-between">
-              <div className="row" style={{gap:12}}>
-                <div className="icon-area" style={{background:'var(--surface2)'}}><Icon name={item.icon} size={18}/></div>
-                <div className="name">{item.label}</div>
-              </div>
-              <Icon name="chevron" size={16} style={{color:'var(--muted)'}}/>
+        <h1 style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',marginBottom:4}}>More</h1>
+        <div className="meta" style={{marginBottom:18}}>Everything beyond your daily essentials</div>
+        {moreGroups.map(group=>(
+          <div key={group.title} style={{marginBottom:22}}>
+            <div className="section-title" style={{marginTop:0}}>{group.title}</div>
+            <div className="card" style={{padding:4}}>
+              {group.items.map((item,idx)=>(
+                <div key={item.id} onClick={()=>setPage(item.id)}
+                     style={{display:'flex',alignItems:'center',gap:12,padding:'11px 10px',cursor:'pointer',borderBottom: idx<group.items.length-1?'1px solid var(--border)':'none',borderRadius:8,transition:'background .12s'}}
+                     onMouseEnter={e=>e.currentTarget.style.background='var(--surface2)'}
+                     onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <div className="icon-area" style={{background:'var(--surface2)',width:34,height:34}}><Icon name={item.icon} size={17}/></div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:500}}>{item.label}</div>
+                    <div className="meta" style={{fontSize:11,marginTop:1}}>{item.desc}</div>
+                  </div>
+                  <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0}}/>
+                </div>
+              ))}
             </div>
           </div>
         ))}
-        <div className="divider" style={{margin:'24px 0 16px'}}/>
-        <div className="card-sm" style={{cursor:'pointer'}} onClick={()=>supabase.auth.signOut()}>
+        <div className="card-sm" style={{cursor:'pointer',marginTop:8}} onClick={()=>supabase.auth.signOut()}>
           <div className="row" style={{gap:10,color:'var(--muted)'}}>
             <Icon name="logout" size={16}/><span style={{fontSize:14}}>Sign out</span>
           </div>
