@@ -903,7 +903,10 @@ async function buildHealthContext(travelContext = null) {
     const {data:{user:u}} = await supabase.auth.getUser();
     if (!u) return null;
     const hsRes = await supabase.from('health_settings').select('enabled,include_in_helm').eq('user_id',u.id).maybeSingle();
-    if (!(hsRes.data?.enabled && hsRes.data?.include_in_helm)) return null;
+    // No settings row = defaults (enabled + included), matching the UI default.
+    // Only bail out if a row exists and explicitly disables.
+    const hsData = hsRes.data;
+    if (hsData && (hsData.enabled === false || hsData.include_in_helm === false)) return null;
 
     const todayStr = new Date().toISOString().slice(0,10);
     const yestStr  = new Date(Date.now()-86400000).toISOString().slice(0,10);
