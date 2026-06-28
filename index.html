@@ -1445,21 +1445,24 @@ function ProjectsPage() {
               <div className="section-title">{horizonMeta[h].label} ({group.length})</div>
               {group.map(p=>{
                 const area = areaMap[p.area_id];
+                const pBorder = p.priority==='high'?'var(--red)':p.priority==='medium'?'var(--amber)':'var(--border)';
+                const overdue = p.due_date && isOverdue(p.due_date);
+                const dueSoon = p.due_date && isDueSoon(p.due_date);
                 return (
-                  <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
+                  <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer',borderLeft:`3px solid ${pBorder}`}}>
                     <div className="row-between">
                       <div style={{flex:1,minWidth:0}}>
-                        <div className="name" style={{marginBottom:4}}>{p.name}</div>
+                        <div className="name" style={{marginBottom:p.description?4:3}}>{p.name}</div>
                         {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
-                        <div className="tag-row">
-                          {priorityPill(p.priority)}
-                          {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
-                          {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
-                            {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
+                        <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+                          {area && <span className="meta" style={{fontSize:11}}>{area.icon} {area.name}</span>}
+                          {(overdue||dueSoon) && <span className={`pill ${overdue?'pill-red':'pill-amber'}`} style={{fontSize:10}}>
+                            {overdue?'Overdue':'Due'} {fmtDate(p.due_date)}
                           </span>}
+                          {p.due_date && !overdue && !dueSoon && <span className="meta" style={{fontSize:11}}>Due {fmtDate(p.due_date)}</span>}
                         </div>
                       </div>
-                      <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+                      <span style={{color:'var(--muted)',flexShrink:0,marginLeft:8,display:'flex'}}><Icon name="chevron" size={16}/></span>
                     </div>
                   </div>
                 );
@@ -1470,23 +1473,28 @@ function ProjectsPage() {
       ) : (
         filtered.map(p => {
           const area = areaMap[p.area_id];
+          const pBorder = p.priority==='high'?'var(--red)':p.priority==='medium'?'var(--amber)':'var(--border)';
+          const overdue = p.due_date && isOverdue(p.due_date);
+          const dueSoon = p.due_date && isDueSoon(p.due_date);
+          const sub = [area && `${area.icon} ${area.name}`, p.horizon && horizonMeta[p.horizon]?.label].filter(Boolean).join('  ·  ');
           return (
-            <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer'}}>
+            <div key={p.id} className="card" onClick={()=>openEdit(p)} style={{cursor:'pointer',borderLeft:`3px solid ${pBorder}`}}>
               <div className="row-between">
                 <div style={{flex:1,minWidth:0}}>
-                  <div className="name" style={{marginBottom:4}}>{p.name}</div>
-                  {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
-                  <div className="tag-row">
+                  <div className="row" style={{gap:7,marginBottom:p.description?4:3}}>
                     {statusPill(p.status)}
-                    {p.horizon && <span className={`pill ${horizonMeta[p.horizon]?.pill||'pill-muted'}`}>{horizonMeta[p.horizon]?.label}</span>}
-                    {priorityPill(p.priority)}
-                    {area && <span className="pill pill-muted">{area.icon} {area.name}</span>}
-                    {p.due_date && <span className={`pill ${isOverdue(p.due_date)?'pill-red':isDueSoon(p.due_date)?'pill-amber':'pill-muted'}`}>
-                      {isOverdue(p.due_date)?'Overdue: ':'Due: '}{fmtDate(p.due_date)}
+                    <div className="name">{p.name}</div>
+                  </div>
+                  {p.description && <div className="meta" style={{marginBottom:6}}>{p.description}</div>}
+                  <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+                    {sub && <span className="meta" style={{fontSize:11}}>{sub}</span>}
+                    {(overdue||dueSoon) && <span className={`pill ${overdue?'pill-red':'pill-amber'}`} style={{fontSize:10}}>
+                      {overdue?'Overdue':'Due'} {fmtDate(p.due_date)}
                     </span>}
+                    {p.due_date && !overdue && !dueSoon && <span className="meta" style={{fontSize:11}}>Due {fmtDate(p.due_date)}</span>}
                   </div>
                 </div>
-                <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0,marginLeft:8}}/>
+                <span style={{color:'var(--muted)',flexShrink:0,marginLeft:8,display:'flex'}}><Icon name="chevron" size={16}/></span>
               </div>
             </div>
           );
@@ -1831,20 +1839,21 @@ function DecisionsAssetsPage() {
                   if (isOverdue(a.mot_due_at)) alerts.push({label:'MOT overdue', type:'red'});
                   else if (isDueSoon(a.mot_due_at)) alerts.push({label:`MOT ${fmtDate(a.mot_due_at)}`, type:'amber'});
                   if (isDueSoon(a.next_service_at)) alerts.push({label:`Service ${fmtDate(a.next_service_at)}`, type:'amber'});
+                  const hasRed = alerts.some(al=>al.type==='red');
+                  const aBorder = hasRed?'var(--red)':alerts.length?'var(--amber)':'var(--border)';
+                  const cost = a.monthly_cost?`£${a.monthly_cost}/mo`:a.annual_cost?`£${a.annual_cost}/yr`:null;
+                  const sub = [area&&area.icon, a.provider, cost].filter(Boolean).join('  ·  ');
                   return (
-                    <div key={a.id} className="card-sm" style={{cursor:'pointer'}} onClick={()=>{setEditing(a);setForm({...a});setModal('asset');}}>
+                    <div key={a.id} className="card-sm" style={{cursor:'pointer',borderLeft:`3px solid ${aBorder}`}} onClick={()=>{setEditing(a);setForm({...a});setModal('asset');}}>
                       <div className="row-between">
                         <div style={{flex:1,minWidth:0}}>
                           <div className="name" style={{fontSize:13}}>{a.name}</div>
-                          {a.provider && <div className="meta">{a.provider}</div>}
-                          <div className="tag-row">
-                            {area && <span className="pill pill-muted">{area.icon}</span>}
-                            {alerts.map((al,i)=><span key={i} className={`pill pill-${al.type}`}>{al.label}</span>)}
-                            {a.monthly_cost && <span className="pill pill-muted">£{a.monthly_cost}/mo</span>}
-                            {a.annual_cost && <span className="pill pill-muted">£{a.annual_cost}/yr</span>}
-                          </div>
+                          {sub && <div className="meta" style={{fontSize:11,marginTop:2}}>{sub}</div>}
+                          {alerts.length>0 && <div className="row" style={{gap:6,flexWrap:'wrap',marginTop:4}}>
+                            {alerts.map((al,i)=><span key={i} className={`pill pill-${al.type}`} style={{fontSize:10}}>{al.label}</span>)}
+                          </div>}
                         </div>
-                        <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0}}/>
+                        <span style={{color:'var(--muted)',flexShrink:0,display:'flex'}}><Icon name="chevron" size={16}/></span>
                       </div>
                     </div>
                   );
