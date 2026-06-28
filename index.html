@@ -6909,32 +6909,32 @@ function App() {
   ];
 
   const moreGroups = [
-    { title:'Daily', items:[
-      { id:'helm',           label:ASSISTANT_NAME,        icon:'zap',    desc:'Plan your day, run reviews' },
-      { id:'calendar',       label:'Calendar',            icon:'clock',  desc:'Week view and events' },
-      { id:'travel',         label:'Travel Buffer',       icon:'clock',  desc:'Leave-by times and prep' },
+    { title:'Daily', accent:'#4f7cff', tint:'rgba(79,124,255,0.14)', tintB:'rgba(79,124,255,0.28)', items:[
+      { id:'helm',           label:ASSISTANT_NAME,        emoji:'🧭', desc:'Plan your day, run reviews' },
+      { id:'calendar',       label:'Calendar',            emoji:'📅', desc:'Week view and events' },
+      { id:'travel',         label:'Travel Buffer',       emoji:'🚗', desc:'Leave-by times and prep' },
     ]},
-    { title:'Health & Body', items:[
-      { id:'health',         label:'Health & Recovery',   icon:'alert',  desc:'Readiness, sleep, vitals, goals' },
-      { id:'weathersettings',label:'Weather & Outdoor',   icon:'alert',  desc:'Forecast and activity risk' },
+    { title:'Health & Body', accent:'#22c55e', tint:'rgba(34,197,94,0.14)', tintB:'rgba(34,197,94,0.28)', items:[
+      { id:'health',         label:'Health & Recovery',   emoji:'🫀', desc:'Readiness, sleep, vitals, goals' },
+      { id:'weathersettings',label:'Weather & Outdoor',   emoji:'🌤️', desc:'Forecast and activity risk' },
     ]},
-    { title:'Planning', items:[
-      { id:'projects',       label:'Projects',            icon:'folder', desc:'Active projects and next actions' },
-      { id:'areas',          label:'Areas & Roles',       icon:'layers', desc:'Life areas and responsibilities' },
-      { id:'decisions',      label:'Decisions & Assets',  icon:'box',    desc:'Open decisions, tracked assets' },
-      { id:'reviews',        label:'Weekly Review',       icon:'clock',  desc:'Reflect and reset each week' },
-      { id:'roadmap',        label:'Roadmap Queue',       icon:'alert',  desc:'What to build next' },
+    { title:'Planning', accent:'#7c5cfc', tint:'rgba(124,92,252,0.14)', tintB:'rgba(124,92,252,0.28)', items:[
+      { id:'projects',       label:'Projects',            emoji:'📁', desc:'Active projects and next actions' },
+      { id:'areas',          label:'Areas & Roles',       emoji:'🎯', desc:'Life areas and responsibilities' },
+      { id:'decisions',      label:'Decisions & Assets',  emoji:'⚖️', desc:'Open decisions, tracked assets' },
+      { id:'reviews',        label:'Weekly Review',       emoji:'🔄', desc:'Reflect and reset each week' },
+      { id:'roadmap',        label:'Roadmap Queue',       emoji:'🗺️', desc:'What to build next' },
     ]},
-    { title:'Settings', items:[
-      { id:'helmsettings',   label:ASSISTANT_NAME+' Settings', icon:'box', desc:'Tune how '+ASSISTANT_NAME+' works' },
-      { id:'travelsettings', label:'Travel Settings',     icon:'box',    desc:'Defaults, buffers, locations' },
-      { id:'prepitems',      label:'Prep Item Library',   icon:'box',    desc:'Reusable packing items' },
+    { title:'Settings', accent:'#f59e0b', tint:'rgba(245,158,11,0.14)', tintB:'rgba(245,158,11,0.28)', items:[
+      { id:'helmsettings',   label:ASSISTANT_NAME+' Settings', emoji:'⚙️', desc:'Tune how '+ASSISTANT_NAME+' works' },
+      { id:'travelsettings', label:'Travel Settings',     emoji:'🧳', desc:'Defaults, buffers, locations' },
+      { id:'prepitems',      label:'Prep Item Library',   emoji:'📦', desc:'Reusable packing items' },
     ]},
-    { title:'System', items:[
-      { id:'systemhealth',   label:'System Health',       icon:'alert',  desc:'Integrations and sync status' },
-      { id:'security',       label:'Security & Privacy',  icon:'alert',  desc:'Access and data controls' },
-      { id:'features',       label:'Features Guide',      icon:'alert',  desc:'What the app can do' },
-      { id:'debug',          label:'Debug Log',           icon:'alert',  desc:'Technical event log' },
+    { title:'System', accent:'#7b82a0', tint:'rgba(123,130,160,0.14)', tintB:'rgba(123,130,160,0.28)', items:[
+      { id:'systemhealth',   label:'System Health',       emoji:'💚', desc:'Integrations and sync status' },
+      { id:'security',       label:'Security & Privacy',  emoji:'🔒', desc:'Access and data controls' },
+      { id:'features',       label:'Features Guide',      emoji:'📖', desc:'What the app can do' },
+      { id:'debug',          label:'Debug Log',           emoji:'🐛', desc:'Technical event log' },
     ]},
   ];
 
@@ -6965,19 +6965,22 @@ function App() {
         <div className="meta" style={{marginBottom:18}}>Everything beyond your daily essentials</div>
         {moreGroups.map(group=>(
           <div key={group.title} style={{marginBottom:22}}>
-            <div className="section-title" style={{marginTop:0}}>{group.title}</div>
+            <div className="row" style={{gap:7,marginBottom:8,marginTop:0}}>
+              <div style={{width:7,height:7,borderRadius:'50%',background:group.accent}}/>
+              <div className="section-title" style={{margin:0}}>{group.title}</div>
+            </div>
             <div className="card" style={{padding:4}}>
               {group.items.map((item,idx)=>(
                 <div key={item.id} onClick={()=>setPage(item.id)}
-                     style={{display:'flex',alignItems:'center',gap:12,padding:'11px 10px',cursor:'pointer',borderBottom: idx<group.items.length-1?'1px solid var(--border)':'none',borderRadius:8,transition:'background .12s'}}
+                     style={{display:'flex',alignItems:'center',gap:12,padding:'11px 10px',cursor:'pointer',borderBottom: idx<group.items.length-1?'1px solid var(--border)':'none',borderRadius:10,transition:'background .12s'}}
                      onMouseEnter={e=>e.currentTarget.style.background='var(--surface2)'}
                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                  <div className="icon-area" style={{background:'var(--surface2)',width:34,height:34}}><Icon name={item.icon} size={17}/></div>
+                  <div style={{width:38,height:38,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0,background:group.tint,border:'1px solid '+group.tintB}}>{item.emoji}</div>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:14,fontWeight:500}}>{item.label}</div>
+                    <div style={{fontSize:14,fontWeight:600}}>{item.label}</div>
                     <div className="meta" style={{fontSize:11,marginTop:1}}>{item.desc}</div>
                   </div>
-                  <Icon name="chevron" size={16} style={{color:'var(--muted)',flexShrink:0}}/>
+                  <span style={{color:'var(--muted)',flexShrink:0,display:'flex'}}><Icon name="chevron" size={16}/></span>
                 </div>
               ))}
             </div>
