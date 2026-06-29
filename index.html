@@ -245,6 +245,13 @@ const TRAVEL_STORE_KEY  = 'ljos_travel_state'; // localStorage: {dismissed:[even
 function loadTravelState()  { try { return JSON.parse(localStorage.getItem(TRAVEL_STORE_KEY)||'{"dismissed":[],"overrides":{}}'); } catch(e) { return {dismissed:[],overrides:{}}; } }
 function saveTravelState(s) { try { localStorage.setItem(TRAVEL_STORE_KEY, JSON.stringify(s)); } catch(e) {} }
 
+// Auto-briefing: track last date Plan My Day auto-ran (first open after 4am)
+const AUTO_BRIEF_KEY = 'ljos_auto_brief_date';
+const getAutoBriefDate = () => { try { return localStorage.getItem(AUTO_BRIEF_KEY); } catch(e) { return null; } };
+const setAutoBriefDate = (d) => { try { localStorage.setItem(AUTO_BRIEF_KEY, d); } catch(e) {} };
+// "Morning key" = the date a 4am-anchored day belongs to. Before 4am counts as the previous day.
+const morningKey = () => localDateKey(new Date(Date.now() - 4*60*60*1000));
+
 function calcTravelTimes(eventStart, journeyMins, preBuffer, prepBuffer) {
   const start = new Date(eventStart);
   const leaveBy     = new Date(start.getTime() - (journeyMins + preBuffer) * 60000);
@@ -6508,6 +6515,7 @@ function DashboardPage({ user, onNavigate }) {
   const [calState, setCalState] = useState(null);
   const [brief, setBrief] = useState(undefined);
   const [briefBusy, setBriefBusy] = useState(false);
+  const [autoRunning, setAutoRunning] = useState(false);
   const [showBriefDetail, setShowBriefDetail] = useState(false);
   const [wx, setWx] = useState(null);           // weather data
   const [wxFetching, setWxFetching] = useState(false);
@@ -6557,8 +6565,21 @@ function DashboardPage({ user, onNavigate }) {
       setCalState(r?.error || 'ok');
     });
 
-    // Today's Helm brief — read-only
-    fetchTodaysBrief().then(b=>setBrief(b));
+    // Today's Helm brief — read-only, with auto-morning-briefing
+    fetchTodaysBrief().then(b=>{
+      setBrief(b);
+      // Auto-briefing: if no brief today, it's after 4am, and we haven't auto-run
+      // for this morning yet, generate one automatically (once per morning).
+      const now = new Date();
+      const afterFourAM = now.getHours() >= 4;
+      const mKey = morningKey();
+      const alreadyAutoRan = getAutoBriefDate() === mKey;
+      const autoBriefEnabled = (wsCfg.auto_morning_brief !== false); // default on
+      if (!b && afterFourAM && !alreadyAutoRan && autoBriefEnabled) {
+        setAutoBriefDate(mKey);          // mark immediately to prevent double-runs
+        setTimeout(()=>{ runPlanMyDay(true); }, 400); // slight delay so dashboard paints first
+      }
+    });
 
     // Readiness for hero strip (non-blocking)
     (async ()=>{
@@ -6653,8 +6674,9 @@ function DashboardPage({ user, onNavigate }) {
   };
 
   // Explicit Helm calls only — on button press
-  const runPlanMyDay = async () => {
+  const runPlanMyDay = async (auto=false) => {
     setBriefBusy(true);
+    if (auto) setAutoRunning(true);
     // Build lightweight travel context for Helm (if travel enabled & include_in_helm)
     let travelContext = null;
     try {
@@ -6754,7 +6776,7 @@ function DashboardPage({ user, onNavigate }) {
 
     await callHelm('plan_my_day', { travelContext, healthContext });
     const b = await fetchTodaysBrief();
-    setBrief(b); setBriefBusy(false);
+    setBrief(b); setBriefBusy(false); setAutoRunning(false);
   };
 
   const archiveBrief = async () => {
@@ -6857,10 +6879,17 @@ function DashboardPage({ user, onNavigate }) {
 
         {brief === undefined ? (
           <div className="meta">Loading…</div>
+        ) : autoRunning && !parsedBrief ? (
+          <div style={{textAlign:'center',padding:'14px 8px'}}>
+            <div style={{fontSize:22,marginBottom:8}}>🌅</div>
+            <div className="spinner" style={{margin:'0 auto 10px'}}/>
+            <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>Good morning, Freddie</div>
+            <div className="meta">{ASSISTANT_NAME} is preparing your morning briefing…</div>
+          </div>
         ) : !parsedBrief ? (
           <div>
             <div className="meta" style={{marginBottom:10}}>No {ASSISTANT_NAME} brief yet today.</div>
-            <button className="btn btn-primary btn-sm" style={{width:'100%',justifyContent:'center'}} disabled={briefBusy} onClick={runPlanMyDay}>
+            <button className="btn btn-primary btn-sm" style={{width:'100%',justifyContent:'center'}} disabled={briefBusy} onClick={()=>runPlanMyDay()}>
               {briefBusy ? `${ASSISTANT_NAME} is thinking…` : `Plan my day with ${ASSISTANT_NAME}`}
             </button>
           </div>
@@ -6899,7 +6928,7 @@ function DashboardPage({ user, onNavigate }) {
 
             <div className="row" style={{gap:6,flexWrap:'wrap'}}>
               <button className="btn btn-ghost btn-sm" onClick={()=>setShowBriefDetail(s=>!s)}>{showBriefDetail?'Hide':'View latest brief'}</button>
-              <button className="btn btn-ghost btn-sm" disabled={briefBusy} onClick={runPlanMyDay}>{briefBusy?'Refreshing…':'Refresh '+ASSISTANT_NAME}</button>
+              <button className="btn btn-ghost btn-sm" disabled={briefBusy} onClick={()=>runPlanMyDay()}>{briefBusy?'Refreshing…':'Refresh '+ASSISTANT_NAME}</button>
               <button className="btn btn-ghost btn-sm" style={{color:'var(--muted)'}} onClick={archiveBrief}>Archive</button>
             </div>
           </div>
