@@ -1621,6 +1621,129 @@ function ProjectsPage() {
 }
 
 // ── TASKS PAGE ────────────────────────────────────────────────
+function FocusQueuePage({ onNavigate }) {
+  const [fq, setFq] = useState(undefined);      // undefined=loading, null=none today
+  const [taskMap, setTaskMap] = useState({});
+  const [waiting, setWaiting] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const todayStr = localDateKey();
+
+  const load = async () => {
+    setLoading(true);
+    const { data:{ user } } = await supabase.auth.getUser();
+    if (!user) { setLoading(false); return; }
+    const [fqRes, tRes, wRes] = await Promise.all([
+      supabase.from('focus_queue').select('*').eq('user_id',user.id).eq('for_date',todayStr).maybeSingle(),
+      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
+      supabase.from('waiting_for').select('*').eq('status','open').order('due_date',{ascending:true,nullsFirst:false}),
+    ]);
+    const tm = {}; (tRes.data||[]).forEach(t=>tm[t.id]=t);
+    setTaskMap(tm); setWaiting(wRes.data||[]); setFq(fqRes.data||null); setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+
+  const complete = async (id) => {
+    await supabase.from('tasks').update({status:'done', completed_at:new Date().toISOString()}).eq('id', id);
+    load();
+  };
+
+  const slotCard = (t, opts={}) => {
+    if (!t) return null;
+    const overdue = t.due_date && isOverdue(t.due_date);
+    const big = opts.big;
+    return (
+      <div key={t.id} className="card" style={{borderLeft:`3px solid ${opts.accent||'var(--accent)'}`,marginBottom:8,padding:big?'16px':'13px'}}>
+        <div className="row-between" style={{alignItems:'flex-start',gap:10}}>
+          <div style={{flex:1,minWidth:0}}>
+            {opts.label && <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',color:opts.accent||'var(--accent)',marginBottom:4}}>{opts.label}</div>}
+            <div style={{fontSize:big?16:14,fontWeight:big?700:600,lineHeight:1.35}}>{t.name}</div>
+            {overdue && <div className="meta" style={{marginTop:4}}><span className="pill pill-red" style={{fontSize:10}}>Overdue {fmtDate(t.due_date)}</span></div>}
+          </div>
+          <button className="btn btn-ghost btn-sm btn-icon" style={{flexShrink:0,borderRadius:'50%'}} onClick={()=>complete(t.id)}><Icon name="check" size={15}/></button>
+        </div>
+      </div>
+    );
+  };
+
+  if (loading) return <div className="spinner"/>;
+
+  const support = (fq?.support_ids||[]).map(id=>taskMap[id]).filter(Boolean);
+  const notToday = (fq?.not_today_ids||[]).map(id=>taskMap[id]).filter(Boolean);
+  const blocked = (fq?.blocked_ids||[]).map(id=>taskMap[id]).filter(Boolean);
+  const anchor = fq?.anchor_task_id ? taskMap[fq.anchor_task_id] : null;
+  const quick = fq?.quick_win_id ? taskMap[fq.quick_win_id] : null;
+
+  return (
+    <div className="page">
+      <div className="hero" style={{background:'linear-gradient(135deg, rgba(79,124,255,0.18), rgba(34,197,94,0.08) 70%)'}}>
+        <div className="hero-greet">Focus Queue</div>
+        <div className="hero-name" style={{fontSize:22}}>What to work on today</div>
+        <div className="hero-date">{new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</div>
+      </div>
+
+      {!fq ? (
+        <div className="card" style={{textAlign:'center',padding:'28px 18px'}}>
+          <div style={{fontSize:28,marginBottom:10}}>🧭</div>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No focus queue yet today</div>
+          <div className="meta" style={{marginBottom:14,lineHeight:1.5}}>Ask {ASSISTANT_NAME} to choose your anchor, support tasks and a quick win — instead of staring at the whole backlog.</div>
+          <button className="btn btn-primary btn-sm" onClick={()=>onNavigate('helm')}>Ask {ASSISTANT_NAME} to plan my focus</button>
+          <button className="btn btn-ghost btn-sm" style={{marginTop:8,width:'100%',justifyContent:'center'}} onClick={()=>onNavigate('tasks')}>Open full backlog</button>
+        </div>
+      ) : (
+        <>
+          {fq.reasoning && (
+            <div className="card" style={{marginBottom:12,background:'linear-gradient(135deg, rgba(79,124,255,0.06), transparent 70%)',borderLeft:'3px solid var(--accent)'}}>
+              <div className="row" style={{gap:8,marginBottom:6}}>
+                <div style={{width:24,height:24,borderRadius:7,background:'rgba(79,124,255,0.15)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13}}>🧭</div>
+                <div style={{fontSize:12,fontWeight:700,color:'var(--accent)'}}>Why this focus</div>
+              </div>
+              <div style={{fontSize:13,lineHeight:1.5,color:'var(--text)'}}>{fq.reasoning}</div>
+            </div>
+          )}
+
+          {anchor && <div className="section-title" style={{marginTop:0}}>Anchor</div>}
+          {slotCard(anchor, {label:'Anchor — the one that matters most', accent:'var(--accent)', big:true})}
+
+          {support.length>0 && <div className="section-title">Support</div>}
+          {support.map(t=>slotCard(t, {accent:'var(--accent2)'}))}
+
+          {quick && <div className="section-title">Quick win</div>}
+          {slotCard(quick, {label:'Quick win', accent:'var(--green)'})}
+
+          {(waiting.length>0 || blocked.length>0) && <div className="section-title">Waiting / blocked</div>}
+          {blocked.map(t=>(
+            <div key={t.id} className="card-sm" style={{borderLeft:'3px solid var(--amber)',marginBottom:6,opacity:0.85}}>
+              <div className="name" style={{fontSize:13}}>{t.name}</div>
+              <div className="meta" style={{fontSize:11}}>Blocked</div>
+            </div>
+          ))}
+          {waiting.map(w=>(
+            <div key={w.id} className="card-sm" style={{borderLeft:'3px solid var(--amber)',marginBottom:6,opacity:0.85}}>
+              <div className="name" style={{fontSize:13}}>{w.name}</div>
+              <div className="meta" style={{fontSize:11}}>Waiting{w.waiting_on?` · ${w.waiting_on}`:''}</div>
+            </div>
+          ))}
+
+          {notToday.length>0 && (
+            <details style={{marginTop:14}}>
+              <summary style={{fontSize:12,color:'var(--muted)',cursor:'pointer',padding:'6px 0'}}>Not today ({notToday.length}) — deliberately parked</summary>
+              <div style={{marginTop:8}}>
+                {notToday.map(t=>(
+                  <div key={t.id} className="card-sm" style={{marginBottom:6,opacity:0.6}}>
+                    <div className="name" style={{fontSize:13}}>{t.name}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:16}} onClick={()=>onNavigate('tasks')}>Open full backlog →</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TasksPage() {
   const [tasks, setTasks] = useState([]);
   const [waitingFor, setWaitingFor] = useState([]);
@@ -7101,7 +7224,7 @@ function App() {
   const navItems = [
     { id:'dashboard', label:'Dashboard',     icon:'home' },
     { id:'helm',       label:ASSISTANT_NAME,  icon:'zap' },
-    { id:'tasks',     label:'Tasks',         icon:'check' },
+    { id:'tasks',     label:'Focus',         icon:'check' },
     { id:'capture',   label:'Capture',       icon:'plus' },
     { id:'more',      label:'More',          icon:'layers' },
   ];
@@ -7118,6 +7241,7 @@ function App() {
     ]},
     { title:'Planning', accent:'#7c5cfc', tint:'rgba(124,92,252,0.14)', tintB:'rgba(124,92,252,0.28)', items:[
       { id:'projects',       label:'Projects',            emoji:'📁', desc:'Active projects and next actions' },
+      { id:'backlog',        label:'Task Backlog',        emoji:'🗂️', desc:'Full task list, filters and modes' },
       { id:'areas',          label:'Areas & Roles',       emoji:'🎯', desc:'Life areas and responsibilities' },
       { id:'decisions',      label:'Decisions & Assets',  emoji:'⚖️', desc:'Open decisions, tracked assets' },
       { id:'reviews',        label:'Weekly Review',       emoji:'🔄', desc:'Reflect and reset each week' },
@@ -7142,7 +7266,8 @@ function App() {
     if (page==='helmsettings')    return <HelmSettingsPage/>;
     if (page==='weathersettings') return <WeatherSettingsPage/>;
     if (page==='projects')        return <ProjectsPage/>;
-    if (page==='tasks')           return <TasksPage/>;
+    if (page==='tasks')           return <FocusQueuePage onNavigate={setPage}/>;
+    if (page==='backlog')         return <TasksPage/>;
     if (page==='capture')         return <QuickCapturePage/>;
     if (page==='calendar')        return <CalendarPage/>;
     if (page==='areas')           return <AreasPage/>;
@@ -7198,7 +7323,7 @@ function App() {
       <div className="topbar">
         <div className="topbar-logo">Lovejoy OS</div>
         <div className="topbar-title">
-          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='prepitems'?'Prep Item Library':page==='health'?'Health & Recovery':page==='projects'?'Projects':page==='tasks'?'Tasks':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='security'?'Security & Privacy':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
+          {page==='dashboard'?'Dashboard':page==='helm'?ASSISTANT_NAME:page==='helmsettings'?ASSISTANT_NAME+' Settings':page==='weathersettings'?'Weather & Outdoor Settings':page==='travel'?'Travel Buffer':page==='travelsettings'?'Travel Settings':page==='prepitems'?'Prep Item Library':page==='health'?'Health & Recovery':page==='projects'?'Projects':page==='tasks'?'Focus Queue':page==='backlog'?'Task Backlog':page==='capture'?'Quick Capture':page==='calendar'?'Calendar':page==='areas'?'Areas & Roles':page==='decisions'?'Decisions & Assets':page==='reviews'?'Weekly Review':page==='roadmap'?'Roadmap Queue':page==='systemhealth'?'System Health':page==='security'?'Security & Privacy':page==='features'?'Features Guide':page==='debug'?'Debug Log':'More'}
         </div>
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
@@ -7209,7 +7334,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','weathersettings','calendar','projects','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','weathersettings','calendar','projects','backlog','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
