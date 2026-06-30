@@ -881,6 +881,19 @@ async function logProposal({ action_type, explanation, payload, status, final_pa
 
 // Applies an approved action to the real tables. Returns { ok, ref, note }.
 // This is the ONLY place writes happen — and only ever on explicit approval.
+
+// Resolve a possibly-truncated task id to a full one. LLMs sometimes send only
+// the first segment of a UUID. Matches by exact id, then unique prefix.
+async function resolveTaskId(maybeId) {
+  if (!maybeId) return null;
+  // Full UUID already (36 chars with dashes)
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(maybeId)) return maybeId;
+  // Truncated — find tasks whose id starts with this prefix
+  const { data } = await supabase.from('tasks').select('id').ilike('id', maybeId + '%');
+  if (data && data.length === 1) return data[0].id;
+  return null; // ambiguous or not found
+}
+
 async function applyProposedAction(type, p) {
   try {
     if (type === 'create_task') {
@@ -924,30 +937,44 @@ async function applyProposedAction(type, p) {
       const { data:{ user } } = await supabase.auth.getUser();
       if (!user) return { ok:false, note:'not signed in' };
       const today = localDateKey();
+      // Resolve any truncated ids to full UUIDs (drop ones that can't be matched)
+      const resolveList = async (arr) => {
+        const out = [];
+        for (const id of (Array.isArray(arr)?arr:[])) { const r = await resolveTaskId(id); if (r) out.push(r); }
+        return out;
+      };
+      const anchor = await resolveTaskId(p.anchor_task_id);
+      const quick = await resolveTaskId(p.quick_win_id);
+      const support = await resolveList(p.support_ids);
+      const notToday = await resolveList(p.not_today_ids);
+      const blocked = await resolveList(p.blocked_ids);
       const row = {
         user_id: user.id, for_date: today,
-        anchor_task_id: p.anchor_task_id || null,
-        support_ids: p.support_ids || [],
-        quick_win_id: p.quick_win_id || null,
-        not_today_ids: p.not_today_ids || [],
-        blocked_ids: p.blocked_ids || [],
+        anchor_task_id: anchor,
+        support_ids: support,
+        quick_win_id: quick,
+        not_today_ids: notToday,
+        blocked_ids: blocked,
         reasoning: p.reasoning || null,
       };
       const { error } = await supabase.from('focus_queue').upsert(row, { onConflict: 'user_id,for_date' });
       if (error) return { ok:false, note:error.message };
-      return { ok:true, ref:today, note:'Focus queue set for today' };
+      const matched = (anchor?1:0) + support.length + (quick?1:0);
+      return { ok:true, ref:today, note:`Focus queue set (${matched} tasks matched)` };
     }
 
     if (type === 'shrink_task') {
+      const tid = await resolveTaskId(p.task_id);
+      if (!tid) return { ok:false, note:'could not match the task to shrink' };
       // Fetch original name to preserve it, then replace with the smaller action
-      const { data:orig } = await supabase.from('tasks').select('name').eq('id', p.task_id).maybeSingle();
+      const { data:orig } = await supabase.from('tasks').select('name').eq('id', tid).maybeSingle();
       const { error } = await supabase.from('tasks').update({
         name: p.shrunk_name,
         shrunk_from: orig?.name || null,
         mode: 'do',
-      }).eq('id', p.task_id);
+      }).eq('id', tid);
       if (error) return { ok:false, note:error.message };
-      return { ok:true, ref:p.task_id, note:'Task shrunk to a smaller next action' };
+      return { ok:true, ref:tid, note:'Task shrunk to a smaller next action' };
     }
 
     if (type === 'create_waiting_for') {
