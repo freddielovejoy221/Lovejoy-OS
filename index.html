@@ -6159,6 +6159,18 @@ function SourceSummary({ snap, compact }) {
           </span>
         </div>
       )}
+      {snap.task_context && (
+        <div className="row-between" style={{fontSize:11,marginBottom:2}}>
+          <span style={{color:'var(--muted)'}}>Tasks &amp; Focus</span>
+          <span style={{color:'var(--text)'}}>
+            {(snap.counts?.tasks||0)+' loaded'}
+            {snap.task_context.focus_queue_requested ? ' · focus queue' : ''}
+            {snap.counts?.stale_tasks ? ' · '+snap.counts.stale_tasks+' stale' : ''}
+            {snap.task_context.friction_included ? ' · friction✓' : ''}
+            {snap.task_context.feedback_memory_included ? ' · memory✓' : ''}
+          </span>
+        </div>
+      )}
       {snap.generated_at && (
         <div style={{fontSize:10,color:'var(--muted)',marginTop:4}}>
           Snapshot at {new Date(snap.generated_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
