@@ -167,6 +167,48 @@ const Icon = ({ name, size = 20 }) => {
   return icons[name] || null;
 };
 
+// ── ERROR BOUNDARY ───────────────────────────────────────────
+// Catches render errors in a page so one broken component shows an inline
+// message instead of white-screening the whole app.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) {
+    try {
+      supabase.auth.getUser().then(({data})=>{
+        if (data?.user) supabase.from('helm_logs').insert({
+          user_id: data.user.id, function_name: 'app_ui', action: 'render_error', status: 'error',
+          meta: { error: String(err?.message || err), page: this.props.page || 'unknown' },
+        }).then(()=>{}).catch(()=>{});
+      }).catch(()=>{});
+    } catch(e) {}
+  }
+  componentDidUpdate(prev) {
+    // Reset when navigating to a different page
+    if (prev.page !== this.props.page && this.state.err) this.setState({ err: null });
+  }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="page">
+          <div className="card" style={{borderLeft:'3px solid var(--red)',textAlign:'center',padding:'28px 18px'}}>
+            <div style={{fontSize:30,marginBottom:10}}>⚠️</div>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>This page hit a snag</div>
+            <div className="meta" style={{marginBottom:14,lineHeight:1.5}}>
+              Something in this view failed to load, but the rest of the app is fine. The error's been logged.
+            </div>
+            <div className="row" style={{gap:8,justifyContent:'center'}}>
+              <button className="btn btn-primary btn-sm" onClick={()=>this.setState({err:null})}>Try again</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ this.setState({err:null}); this.props.onHome && this.props.onHome(); }}>Go to dashboard</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── HELPERS ──────────────────────────────────────────────────
 const priorityPill = p => {
   if (p === 'high')   return <span className="pill pill-red">High</span>;
@@ -7161,7 +7203,9 @@ function App() {
         <div className="topbar-user" onClick={()=>setPage('more')}>F</div>
       </div>
       <div className="main">
-        {renderPage()}
+        <ErrorBoundary page={page} onHome={()=>setPage('dashboard')}>
+          {renderPage()}
+        </ErrorBoundary>
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
