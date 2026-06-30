@@ -1678,11 +1678,19 @@ function ProjectsPage() {
 }
 
 // ── TASKS PAGE ────────────────────────────────────────────────
+const FRICTION_REASONS = [
+  ['too_vague','Too vague'], ['too_big','Too big'], ['no_time','Not enough time'],
+  ['low_energy','Low energy'], ['not_important','Not important now'], ['blocked','Blocked'],
+  ['wrong_context','Wrong day/context'], ['needs_decision','Needs a decision'],
+  ['avoided','I avoided it'], ['other','Other'],
+];
+
 function FocusQueuePage({ onNavigate }) {
   const [fq, setFq] = useState(undefined);      // undefined=loading, null=none today
   const [taskMap, setTaskMap] = useState({});
   const [waiting, setWaiting] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [frictionFor, setFrictionFor] = useState(null);  // task being given friction feedback
   const todayStr = localDateKey();
 
   const load = async () => {
@@ -1717,6 +1725,22 @@ function FocusQueuePage({ onNavigate }) {
     load();
   };
 
+  // Capture why a task didn't happen, then snooze it out of today's focus
+  const submitFriction = async (reason) => {
+    const t = frictionFor;
+    if (!t) return;
+    const { data:{ user } } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from('task_friction').insert({ user_id:user.id, task_id:t.id, reason });
+      await supabase.from('tasks').update({
+        snooze_count: (t.snooze_count||0) + 1,
+        last_skipped_at: new Date().toISOString(),
+      }).eq('id', t.id);
+    }
+    setFrictionFor(null);
+    load();
+  };
+
   const slotCard = (t, opts={}) => {
     if (!t) return null;
     const overdue = t.due_date && isOverdue(t.due_date);
@@ -1729,7 +1753,10 @@ function FocusQueuePage({ onNavigate }) {
             <div style={{fontSize:big?16:14,fontWeight:big?700:600,lineHeight:1.35}}>{t.name}</div>
             {overdue && <div className="meta" style={{marginTop:4}}><span className="pill pill-red" style={{fontSize:10}}>Overdue {fmtDate(t.due_date)}</span></div>}
           </div>
-          <button className="btn btn-ghost btn-sm btn-icon" style={{flexShrink:0,borderRadius:'50%'}} onClick={()=>complete(t.id)}><Icon name="check" size={15}/></button>
+          <div style={{display:'flex',flexDirection:'column',gap:6,flexShrink:0}}>
+            <button className="btn btn-ghost btn-sm btn-icon" style={{borderRadius:'50%'}} onClick={()=>complete(t.id)} title="Done"><Icon name="check" size={15}/></button>
+            <button className="btn btn-ghost btn-sm btn-icon" style={{borderRadius:'50%',color:'var(--muted)'}} onClick={()=>setFrictionFor(t)} title="Not today"><Icon name="x" size={14}/></button>
+          </div>
         </div>
       </div>
     );
@@ -1817,6 +1844,22 @@ function FocusQueuePage({ onNavigate }) {
 
           <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:16}} onClick={()=>onNavigate('tasks')}>Open full backlog →</button>
         </>
+      )}
+
+      {frictionFor && (
+        <div className="modal-overlay" onClick={()=>setFrictionFor(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:4}}>Not today — what got in the way?</div>
+            <div className="meta" style={{marginBottom:14,lineHeight:1.5}}>No judgement. This helps {ASSISTANT_NAME} suggest better next time.</div>
+            <div style={{fontSize:13,fontWeight:600,marginBottom:10,color:'var(--muted)'}}>{frictionFor.name}</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+              {FRICTION_REASONS.map(([key,label])=>(
+                <button key={key} className="qc-type-btn" onClick={()=>submitFriction(key)}>{label}</button>
+              ))}
+            </div>
+            <button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center',marginTop:14}} onClick={()=>setFrictionFor(null)}>Cancel</button>
+          </div>
+        </div>
       )}
     </div>
   );
