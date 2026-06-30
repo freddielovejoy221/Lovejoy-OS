@@ -920,6 +920,36 @@ async function applyProposedAction(type, p) {
       return { ok:true, ref:p.task_id };
     }
 
+    if (type === 'set_focus_queue') {
+      const { data:{ user } } = await supabase.auth.getUser();
+      if (!user) return { ok:false, note:'not signed in' };
+      const today = localDateKey();
+      const row = {
+        user_id: user.id, for_date: today,
+        anchor_task_id: p.anchor_task_id || null,
+        support_ids: p.support_ids || [],
+        quick_win_id: p.quick_win_id || null,
+        not_today_ids: p.not_today_ids || [],
+        blocked_ids: p.blocked_ids || [],
+        reasoning: p.reasoning || null,
+      };
+      const { error } = await supabase.from('focus_queue').upsert(row, { onConflict: 'user_id,for_date' });
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:today, note:'Focus queue set for today' };
+    }
+
+    if (type === 'shrink_task') {
+      // Fetch original name to preserve it, then replace with the smaller action
+      const { data:orig } = await supabase.from('tasks').select('name').eq('id', p.task_id).maybeSingle();
+      const { error } = await supabase.from('tasks').update({
+        name: p.shrunk_name,
+        shrunk_from: orig?.name || null,
+        mode: 'do',
+      }).eq('id', p.task_id);
+      if (error) return { ok:false, note:error.message };
+      return { ok:true, ref:p.task_id, note:'Task shrunk to a smaller next action' };
+    }
+
     if (type === 'create_waiting_for') {
       const { data, error } = await supabase.from('waiting_for').insert({
         name: p.name,
@@ -4223,12 +4253,14 @@ function ProposedActions({ changes, sourceRequest }) {
   useEffect(()=>{
     (async ()=>{
       const taskIds = changes.filter(c=>c.task_id).map(c=>c.task_id);
+      const anchorIds = changes.filter(c=>c.anchor_task_id).map(c=>c.anchor_task_id);
+      const allTaskIds = [...new Set([...taskIds, ...anchorIds])];
       const projIds = changes.filter(c=>c.project_id).map(c=>c.project_id);
       const decIds  = changes.filter(c=>c.decision_id).map(c=>c.decision_id);
       const out = {};
       try {
-        if (taskIds.length) {
-          const {data} = await supabase.from('tasks').select('id,name,status,priority,due_date').in('id',taskIds);
+        if (allTaskIds.length) {
+          const {data} = await supabase.from('tasks').select('id,name,status,priority,due_date').in('id',allTaskIds);
           (data||[]).forEach(t=>out[t.id]={...t});
         }
         if (projIds.length) {
@@ -4257,6 +4289,8 @@ function ProposedActions({ changes, sourceRequest }) {
       case 'update_decision_status': return dName ? `Mark "${dName}" as ${c.status}` : `Mark a decision as ${c.status}`;
       case 'create_calendar_block': return `Block calendar: "${c.title}" ${c.date || ''} ${c.start_time || ''}–${c.end_time || ''}`;
       case 'archive_project': return pName ? `Archive "${pName}"` : `Archive a project`;
+      case 'set_focus_queue': { const aName = c.anchor_task_id && names[c.anchor_task_id]?.name; return aName ? `Set today's Focus Queue — anchor: "${aName}"` : `Set today's Focus Queue`; }
+      case 'shrink_task': return tName ? `Shrink "${tName}" → "${c.shrunk_name}"` : `Shrink a task → "${c.shrunk_name}"`;
       default: return c.type;
     }
   };
@@ -4269,6 +4303,7 @@ function ProposedActions({ changes, sourceRequest }) {
     if (type === 'update_decision_status') return [['status','New status','decstatus'],['outcome','Outcome','text']];
     if (type === 'create_calendar_block') return [['title','Title','text'],['date','Date','date'],['start_time','Start','time'],['end_time','End','time']];
     if (type === 'update_task_priority') return [['priority','Priority','priority']];
+    if (type === 'shrink_task') return [['shrunk_name','Smaller next action','text']];
     return [];
   };
 
@@ -4335,6 +4370,8 @@ function ProposedActions({ changes, sourceRequest }) {
     update_decision_status:     {icon:'⚖️', colour:'#22c55e', label:'Decision'},
     create_calendar_block:      {icon:'📅', colour:'#039be5', label:'Calendar block'},
     archive_project:            {icon:'📦', colour:'#7b82a0', label:'Archive'},
+    set_focus_queue:            {icon:'🧭', colour:'#4f7cff', label:'Focus queue'},
+    shrink_task:                {icon:'✂️', colour:'#22c55e', label:'Shrink task'},
   };
 
   return (
