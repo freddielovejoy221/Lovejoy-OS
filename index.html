@@ -3732,6 +3732,18 @@ const SYSTEM_REGISTRY = [
     },
   },
   {
+    id:'focus_queue', name:'Focus Queue (Task OS v2)', category:'Monitoring',
+    required:false, usesSecrets:false, accessType:'approval-gated',
+    description:'Helm selects a daily Focus Queue (anchor, support, quick win) from tasks + calendar + health + friction feedback. Captures friction reasons when tasks are skipped, generates lightweight working-memory insights. Focus queue and shrink changes go through approval.',
+    settingsPage:null, plannedOnly:false,
+    getStatus:(h)=>{
+      const last = h?.logs?.find(l=>l.action==='plan_my_day'&&l.status==='success');
+      return last
+        ? { status:'Working', detail:'Focus Queue generated via Plan My Day. Friction feedback + working memory active.', lastSuccess:last.created_at }
+        : { status:'Idle', detail:'No focus queue generated yet — run Plan My Day to create one.' };
+    },
+  },
+  {
     id:'travel_buffer', name:'Travel Buffer Assistant', category:'Monitoring',
     required:false, usesSecrets:false, accessType:'approval-gated',
     description:'Reads calendar events with locations, calculates get-ready/leave-by times, provides Google Maps and Waze links, proposes travel blocks via approval flow. MVP: manual/default journey times only (no live routing yet).',
