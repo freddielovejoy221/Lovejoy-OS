@@ -1664,13 +1664,26 @@ function FocusQueuePage({ onNavigate }) {
     if (!user) { setLoading(false); return; }
     const [fqRes, tRes, wRes] = await Promise.all([
       supabase.from('focus_queue').select('*').eq('user_id',user.id).eq('for_date',todayStr).maybeSingle(),
-      supabase.from('tasks').select('*').neq('status','done').neq('status','cancelled'),
+      supabase.from('tasks').select('*'),  // all tasks, so a completed/odd-status anchor still resolves by name
       supabase.from('waiting_for').select('*').eq('status','open').order('due_date',{ascending:true,nullsFirst:false}),
     ]);
     const tm = {}; (tRes.data||[]).forEach(t=>tm[t.id]=t);
-    setTaskMap(tm); setWaiting(wRes.data||[]); setFq(fqRes.data||null); setLoading(false);
+    // Normalise id arrays — Helm sometimes returns them as JSON strings
+    const fqRow = fqRes.data ? { ...fqRes.data,
+      support_ids: asArr(fqRes.data.support_ids),
+      not_today_ids: asArr(fqRes.data.not_today_ids),
+      blocked_ids: asArr(fqRes.data.blocked_ids),
+    } : null;
+    setTaskMap(tm); setWaiting(wRes.data||[]); setFq(fqRow); setLoading(false);
   };
   useEffect(()=>{ load(); },[]);
+
+  // Coerce a value that may be array, JSON-string, or null into a string array
+  const asArr = (v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') { try { const j = JSON.parse(v); return Array.isArray(j)?j:[]; } catch(e){ return []; } }
+    return [];
+  };
 
   const complete = async (id) => {
     await supabase.from('tasks').update({status:'done', completed_at:new Date().toISOString()}).eq('id', id);
@@ -1702,6 +1715,7 @@ function FocusQueuePage({ onNavigate }) {
   const blocked = (fq?.blocked_ids||[]).map(id=>taskMap[id]).filter(Boolean);
   const anchor = fq?.anchor_task_id ? taskMap[fq.anchor_task_id] : null;
   const quick = fq?.quick_win_id ? taskMap[fq.quick_win_id] : null;
+  const nothingResolved = fq && !anchor && support.length===0 && !quick;
 
   return (
     <div className="page">
@@ -1728,6 +1742,13 @@ function FocusQueuePage({ onNavigate }) {
                 <div style={{fontSize:12,fontWeight:700,color:'var(--accent)'}}>Why this focus</div>
               </div>
               <div style={{fontSize:13,lineHeight:1.5,color:'var(--text)'}}>{fq.reasoning}</div>
+            </div>
+          )}
+
+          {nothingResolved && (
+            <div className="card" style={{borderLeft:'3px solid var(--amber)',marginBottom:12}}>
+              <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>Queue saved, but tasks couldn’t be matched</div>
+              <div className="meta" style={{lineHeight:1.5}}>{ASSISTANT_NAME} set a focus queue but the task references didn’t line up with your current tasks (they may have changed since). Try re-running Plan My Day, or open the backlog to work directly.</div>
             </div>
           )}
 
