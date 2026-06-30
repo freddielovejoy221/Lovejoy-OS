@@ -252,6 +252,29 @@ const setAutoBriefDate = (d) => { try { localStorage.setItem(AUTO_BRIEF_KEY, d);
 // "Morning key" = the date a 4am-anchored day belongs to. Before 4am counts as the previous day.
 const morningKey = () => localDateKey(new Date(Date.now() - 4*60*60*1000));
 
+// Trigger a Withings sync and wait for it (used before the morning auto-brief so
+// last night's sleep/HRV is pulled before Helm plans the day). Resolves on success
+// or failure — never throws, so a sync hiccup can't block the briefing.
+async function syncWithingsAndWait(timeoutMs = 12000) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return { ok:false, reason:'no_session' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
+    const res = await fetch(SUPABASE_URL+'/functions/v1/withings-sync', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_KEY},
+      body: JSON.stringify({}),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const j = await res.json().catch(()=>({}));
+    return { ok: res.ok, data: j };
+  } catch(e) {
+    return { ok:false, reason: e?.name==='AbortError' ? 'timeout' : 'error' };
+  }
+}
+
 function calcTravelTimes(eventStart, journeyMins, preBuffer, prepBuffer) {
   const start = new Date(eventStart);
   const leaveBy     = new Date(start.getTime() - (journeyMins + preBuffer) * 60000);
@@ -4438,6 +4461,9 @@ function HealthPage() {
                     ['🩺 Diastolic BP',   latest.diastolic_bp!=null ? latest.diastolic_bp+' mmHg' : null],
                     ['💪 Muscle mass',    latest.muscle_mass_kg!=null ? latest.muscle_mass_kg+' kg' : null],
                     ['🧈 Body fat',       latest.body_fat_pct!=null ? latest.body_fat_pct+'%' : null],
+                    ['🔥 Fat mass',       latest.fat_mass_kg!=null ? latest.fat_mass_kg+' kg' : null],
+                    ['🥩 Lean mass',      latest.fat_free_mass_kg!=null ? latest.fat_free_mass_kg+' kg' : null],
+                    ['💧 Hydration',      latest.hydration_kg!=null ? latest.hydration_kg+' kg' : null],
                   ].map(([l,v])=>(
                     <div key={l} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'var(--surface2)',borderRadius:6,padding:'7px 10px',opacity:v!=null?1:0.45}}>
                       <span style={{fontSize:11,color:'var(--muted)'}}>{l}</span>
@@ -6516,6 +6542,7 @@ function DashboardPage({ user, onNavigate }) {
   const [brief, setBrief] = useState(undefined);
   const [briefBusy, setBriefBusy] = useState(false);
   const [autoRunning, setAutoRunning] = useState(false);
+  const [autoSyncing, setAutoSyncing] = useState(false);
   const [showBriefDetail, setShowBriefDetail] = useState(false);
   const [wx, setWx] = useState(null);           // weather data
   const [wxFetching, setWxFetching] = useState(false);
@@ -6577,7 +6604,14 @@ function DashboardPage({ user, onNavigate }) {
       const autoBriefEnabled = (wsCfg.auto_morning_brief !== false); // default on
       if (!b && afterFourAM && !alreadyAutoRan && autoBriefEnabled) {
         setAutoBriefDate(mKey);          // mark immediately to prevent double-runs
-        setTimeout(()=>{ runPlanMyDay(true); }, 400); // slight delay so dashboard paints first
+        // Sync Withings FIRST so last night's sleep/HRV is present, THEN plan.
+        // syncWithingsAndWait never throws; if it times out we still plan (Helm
+        // will flag stale recovery data via recovery_is_today).
+        setAutoSyncing(true);
+        syncWithingsAndWait().then(()=>{
+          setAutoSyncing(false);
+          runPlanMyDay(true);
+        });
       }
     });
 
@@ -6879,12 +6913,12 @@ function DashboardPage({ user, onNavigate }) {
 
         {brief === undefined ? (
           <div className="meta">Loading…</div>
-        ) : autoRunning && !parsedBrief ? (
+        ) : (autoSyncing || autoRunning) && !parsedBrief ? (
           <div style={{textAlign:'center',padding:'14px 8px'}}>
             <div style={{fontSize:22,marginBottom:8}}>🌅</div>
             <div className="spinner" style={{margin:'0 auto 10px'}}/>
             <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>Good morning, Freddie</div>
-            <div className="meta">{ASSISTANT_NAME} is preparing your morning briefing…</div>
+            <div className="meta">{autoSyncing ? 'Pulling in last night’s sleep & recovery…' : `${ASSISTANT_NAME} is preparing your morning briefing…`}</div>
           </div>
         ) : !parsedBrief ? (
           <div>
