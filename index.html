@@ -5646,7 +5646,7 @@ function TravelPage() {
     const cal  = await fetchCalendarEvents(days);
     if (cal?.error) { setCalError(cal.error); }
     // Filter timed events with location
-    const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start);
+    const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start && !/^Travel\/prep for /.test(e.title||''));
     setEvents(timed); setLoading(false);
   };
 
