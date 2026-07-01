@@ -458,8 +458,8 @@ function calcReadiness(snap, travelContext, weatherContext) {
 }
 
 // ── TRAVEL BUFFER v2 HELPERS ──────────────────────────────────
-const GAP_COLOUR = {comfortable:'var(--accent)',manageable:'var(--text)',tight:'var(--amber)',overloaded:'var(--red)',unknown:'var(--muted)'};
-const GAP_LABEL  = {comfortable:'Comfortable',manageable:'Manageable',tight:'Tight ⚠',overloaded:'Overloaded ⚠⚠',unknown:'Unknown'};
+const GAP_COLOUR = {comfortable:'var(--accent)',manageable:'var(--text)',tight:'var(--amber)',overloaded:'var(--red)',needs_estimate:'var(--muted)',unknown:'var(--muted)'};
+const GAP_LABEL  = {comfortable:'Comfortable',manageable:'Manageable',tight:'Tight ⚠',overloaded:'Overloaded ⚠⚠',needs_estimate:'Needs estimate',unknown:'Unknown'};
 
 // ── TRAVEL BUFFER DB HELPERS (write-through to Supabase) ─────
 // Non-blocking. Fail silently — localStorage is the cache/fallback.
@@ -573,27 +573,41 @@ async function saveActionState(module, itemKey, completed) {
 // Determine likely start location from the previous event in the window
 function calcStartLocation(event, allTimedEvents, defaultName, defaultAddress) {
   const eStart = new Date(event.start);
+  // Skip no-location events when hunting for the last known place (they can't tell us where we were)
   const prev = [...(allTimedEvents||[])]
     .filter(ev => ev.id!==event.id && ev.location && !ev.allDay && new Date(ev.start) < eStart)
     .sort((a,b) => new Date(b.start) - new Date(a.start))[0];
   if (prev) {
-    const prevEnd = prev.end ? new Date(prev.end) : new Date(new Date(prev.start).getTime() + 3600000);
-    const gapMins = Math.round((eStart - prevEnd) / 60000);
-    if (gapMins >= 0 && gapMins < 180) {
-      return { name: prev.location, address: prev.location, source:'previous_event',
-               prevTitle: prev.title, prevEnd: prevEnd.toISOString(), gapFromPrev: gapMins };
+    const prevEnd  = prev.end ? new Date(prev.end) : new Date(new Date(prev.start).getTime() + 3600000);
+    const gapMins  = Math.round((eStart - prevEnd) / 60000);
+    const sameDay  = eStart.toDateString() === new Date(prev.start).toDateString();
+    const base = { name: prev.location, address: prev.location, prevTitle: prev.title,
+                   prevEnd: prevEnd.toISOString(), gapFromPrev: gapMins };
+    // Back-to-back or short same-day gap → confidently coming from the previous place
+    if (gapMins < 0 || (sameDay && gapMins <= 180)) {
+      return { ...base, source:'previous_event', confidence:'high' };
     }
+    // Longer same-day gap → probably still out and about, but you might have gone home. Flag it.
+    if (sameDay && gapMins <= 360) {
+      return { ...base, source:'previous_event_uncertain', confidence:'low' };
+    }
+    // Different day or a very long gap → home is the safer assumption
   }
-  return { name: defaultName||'Home', address: defaultAddress||'', source:'default' };
+  return { name: defaultName||'Home', address: defaultAddress||'', source:'default', confidence:'high' };
 }
 
-// Gap label between get-ready time and end of previous event
-function calcGapLabel(getReadyTime, prevEventEnd) {
-  if (!getReadyTime || !prevEventEnd) return 'unknown';
+// Gap label between get-ready time and end of previous event.
+// opts: { sameLocation, hasEstimate } — same-location gaps need no travel; missing estimate ≠ overloaded.
+function calcGapLabel(getReadyTime, prevEventEnd, opts) {
+  const { sameLocation = false, hasEstimate = true } = opts || {};
+  if (!hasEstimate || !getReadyTime) return 'needs_estimate';
+  if (!prevEventEnd) return 'unknown'; // nothing scheduled before it
   const bufMins = (new Date(getReadyTime) - new Date(prevEventEnd)) / 60000;
+  // Same location: no journey needed, so a small buffer isn't a problem
+  if (sameLocation) return bufMins < 0 ? 'manageable' : 'comfortable';
   if (bufMins < 0)  return 'overloaded';
-  if (bufMins < 15) return 'tight';
-  if (bufMins < 45) return 'manageable';
+  if (bufMins < 10) return 'tight';
+  if (bufMins < 30) return 'manageable';
   return 'comfortable';
 }
 
@@ -612,7 +626,7 @@ function calcTravelPressure(suggestions) {
     if (p.kit_level==='kit-heavy' || s.kit_level==='kit-heavy') score += 2;
     if (p.requires_overnight || s.requires_overnight) score += 2;
     if (p.requires_laptop    || s.requires_laptop)    score += 1;
-    if ((s.startLoc||s.start_location_source)==='previous_event') score += 1;
+    if (String(s.startLoc||s.start_location_source||'').startsWith('previous_event')) score += 1;
   });
   if (score >= 8) return 'overloaded';
   if (score >= 5) return 'tight';
@@ -5673,7 +5687,9 @@ function TravelPage() {
       .filter(ev => ev.id!==e.id && !ev.allDay && new Date(ev.start) < new Date(e.start))
       .sort((a,b) => new Date(b.start) - new Date(a.start))[0];
     const prevEnd = prevEvent?.end || (prevEvent ? new Date(new Date(prevEvent.start).getTime()+3600000).toISOString() : null);
-    const gapLabel = calcGapLabel(times?.getReady, prevEnd);
+    const norm = s => (s||'').toLowerCase().replace(/[\s,]+/g,'').trim();
+    const sameLoc = !!e.location && !!startLoc.address && norm(startLoc.address)===norm(e.location);
+    const gapLabel = calcGapLabel(times?.getReady, prevEnd, {sameLocation: sameLoc, hasEstimate: jMins!=null});
 
     // v2: profile and prep
     const profile  = override.profile || {};
@@ -5915,9 +5931,11 @@ function TravelPage() {
                 <div className="meta">{fmtDT(e.start)}</div>
                 <div className="meta">{e.location ? '📍 '+e.location : '📍 No location set — tap Edit'}</div>
                 {/* v2: start location */}
-                <div style={{fontSize:10,color: startLoc.source==='previous_event'?'var(--accent)':'var(--muted)',marginTop:2}}>
+                <div style={{fontSize:10,color: startLoc.source==='previous_event'?'var(--accent)':startLoc.source==='previous_event_uncertain'?'var(--amber)':'var(--muted)',marginTop:2}}>
                   {startLoc.source==='previous_event'
                     ? '↩ From: ' + startLoc.name + ' (' + startLoc.prevTitle + ' +' + startLoc.gapFromPrev + 'm)'
+                    : startLoc.source==='previous_event_uncertain'
+                    ? '↩? From: ' + startLoc.name + ' — uncertain (' + Math.round(startLoc.gapFromPrev/60) + 'h gap), tap Edit to confirm'
                     : startLoc.source==='custom'
                       ? '📌 From: ' + startLoc.name
                       : '🏠 From: ' + startLoc.name}
@@ -5925,7 +5943,7 @@ function TravelPage() {
               </div>
               <div style={{flexShrink:0,textAlign:'right'}}>
                 <div style={{fontSize:11,color:'var(--muted)'}}>{TRAVEL_MODE_LABEL[mode]||mode}</div>
-                {gapLabel && gapLabel!=='comfortable' && gapLabel!=='unknown' && (
+                {gapLabel && gapLabel!=='comfortable' && gapLabel!=='unknown' && gapLabel!=='needs_estimate' && (
                   <div style={{fontSize:9,fontWeight:700,color:GAP_COLOUR[gapLabel],marginTop:2}}>
                     {GAP_LABEL[gapLabel]}
                   </div>
@@ -5983,6 +6001,12 @@ function TravelPage() {
                   <input className="input" placeholder={'Auto: ' + startLoc.name}
                     value={editVals.startLocationCustom?.address||''}
                     onChange={e2=>setEditVals(v=>({...v,startLocationCustom:e2.target.value?{name:e2.target.value,address:e2.target.value}:null}))}/>
+                  {(startLoc.source==='previous_event'||startLoc.source==='previous_event_uncertain') && (
+                    <div className="row" style={{gap:6,marginTop:6,flexWrap:'wrap'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setEditVals(v=>({...v,startLocationCustom:{name:startLoc.name,address:startLoc.address}}))}>✓ Use {startLoc.name}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setEditVals(v=>({...v,startLocationCustom:{name:(ts||DEFAULT_TRAVEL_SETTINGS).default_start_name||'Home',address:(ts||DEFAULT_TRAVEL_SETTINGS).default_start_address||''}}))}>🏠 Force Home</button>
+                    </div>
+                  )}
                 </div>
                 <div className="row" style={{gap:6}}>
                   <button className="btn btn-primary btn-sm" onClick={()=>saveOverride(e.id, e)}>Save</button>
@@ -7069,7 +7093,9 @@ function DashboardPage({ user, onNavigate }) {
               : calcStartLocation(e, evts, tsCfg.default_start_name, tsCfg.default_start_address);
             const prevEvt  = evts.filter(ev=>ev.id!==e.id&&!ev.allDay&&new Date(ev.start)<new Date(e.start)).sort((a,b)=>new Date(b.start)-new Date(a.start))[0];
             const prevEndTs= prevEvt?.end||(prevEvt?new Date(new Date(prevEvt.start).getTime()+3600000).toISOString():null);
-            const gapLabel = calcGapLabel(times?.getReady, prevEndTs);
+            const normD = s => (s||'').toLowerCase().replace(/[\s,]+/g,'').trim();
+            const sameLocD = !!e.location && !!startLoc.address && normD(startLoc.address)===normD(e.location);
+            const gapLabel = calcGapLabel(times?.getReady, prevEndTs, {sameLocation: sameLocD, hasEstimate: jMins!=null});
 
             // Evening-before prep: event is tomorrow before 9am and journey is significant
             const eventDate = new Date(e.start);
@@ -7101,6 +7127,7 @@ function DashboardPage({ user, onNavigate }) {
               // v2 fields
               start_location_name:    startLoc.name,
               start_location_source:  startLoc.source,
+              start_location_confidence: startLoc.confidence || 'high',
               gap_label:              gapLabel,
               kit_level:              ov.profile?.kit_level || 'normal',
               requires_laptop:        ov.profile?.requires_laptop || false,
