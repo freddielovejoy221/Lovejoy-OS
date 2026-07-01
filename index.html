@@ -5646,7 +5646,7 @@ function TravelPage() {
     const cal  = await fetchCalendarEvents(days);
     if (cal?.error) { setCalError(cal.error); }
     // Filter timed events with location
-    const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start && e.location);
+    const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start);
     setEvents(timed); setLoading(false);
   };
 
@@ -5686,6 +5686,8 @@ function TravelPage() {
 
   const travelEvents = events.filter(e=>{
     if (state.dismissed.includes(e.id)) return false;
+    // No-location events: surface them so the user can add a journey/destination via Edit
+    if (!e.location) return true;
     // Always show events the user has manually configured (set journey time, preset, etc.)
     if (state.overrides[e.id]?.journeyMins > 0) return true;
     const {jMins} = getSuggestion(e, defaultPreset, ts||DEFAULT_TRAVEL_SETTINGS, events);
@@ -5911,7 +5913,7 @@ function TravelPage() {
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600}}>{e.title}</div>
                 <div className="meta">{fmtDT(e.start)}</div>
-                <div className="meta">📍 {e.location}</div>
+                <div className="meta">{e.location ? '📍 '+e.location : '📍 No location set — tap Edit'}</div>
                 {/* v2: start location */}
                 <div style={{fontSize:10,color: startLoc.source==='previous_event'?'var(--accent)':'var(--muted)',marginTop:2}}>
                   {startLoc.source==='previous_event'
@@ -6004,8 +6006,8 @@ function TravelPage() {
 
             {/* Action buttons */}
             <div className="row" style={{gap:6,flexWrap:'wrap'}}>
-              <a href={nav.google} target="_blank" rel="noopener" className="btn btn-ghost btn-sm">🗺 Maps</a>
-              <a href={nav.waze}   target="_blank" rel="noopener" className="btn btn-ghost btn-sm">Waze</a>
+              {e.location && <a href={nav.google} target="_blank" rel="noopener" className="btn btn-ghost btn-sm">🗺 Maps</a>}
+              {e.location && <a href={nav.waze}   target="_blank" rel="noopener" className="btn btn-ghost btn-sm">Waze</a>}
               <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(isEditing?null:e.id);setEditVals(state.overrides[e.id]||{});}}>
                 {isEditing?'Cancel edit':'Edit'}
               </button>
