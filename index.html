@@ -611,22 +611,32 @@ function calcGapLabel(getReadyTime, prevEventEnd, opts) {
   return 'comfortable';
 }
 
-// Weather-aware travel adjustment. Uses the cached weather snapshot, which is a
-// TODAY-ONLY forecast for the default location — so it only applies to today's
-// events. Returns extra buffer minutes (worst condition wins, they don't stack)
-// plus human reasons and prep suggestions. Fails soft to zero.
+// Weather-aware travel adjustment. Uses the weather snapshot: today's conditions
+// come from the top-level fields, and future days from the additive `days[]` array
+// (Met Office daily forecast). Applies within the next ~48h only; beyond that the
+// forecast is less reliable. Worst condition wins (buffers don't stack). Fails soft.
 function calcWeatherTravelImpact(eventStartISO, wx, ws) {
   const none = { extraMins:0, reasons:[], prep:[] };
   if (!wx || wx.error || !eventStartISO) return none;
   const d = new Date(eventStartISO);
-  if (isNaN(d.getTime()) || d.toDateString() !== new Date().toDateString()) return none; // today only
+  if (isNaN(d.getTime())) return none;
+  const hrs = (d.getTime() - Date.now()) / 3600000;
+  if (hrs < -1 || hrs > 48) return none; // only the next ~48h
+  const londonKey = dt => new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/London',year:'numeric',month:'2-digit',day:'2-digit'}).format(dt);
+  const evKey = londonKey(d), todayKey = londonKey(new Date());
+  // Today → live snapshot; otherwise the matching day entry (skip if we don't have it)
+  let src = wx;
+  if (evKey !== todayKey) {
+    src = (wx.days||[]).find(x => x.date === evKey);
+    if (!src) return none;
+  }
   const s = ws || DEFAULT_WEATHER_SETTINGS;
-  const code    = wx.weather_code ?? wx.daily_code;
-  const rain    = wx.rain_prob_max || wx.rain_prob || 0;
-  const gusts   = wx.gusts || 0;
-  const tempMin = wx.temp_min;
+  const code    = src.weather_code ?? src.daily_code;
+  const rain    = src.rain_prob_max || src.rain_prob || 0;
+  const gusts   = src.gusts || 0;
+  const tempMin = src.temp_min;
   const isSnowIce = [16,17,18,19,20,21,22,23,24,25,26,27].includes(code) || (tempMin!=null && tempMin <= 1);
-  const isThunder = wx.has_thunder || [28,29,30].includes(code);
+  const isThunder = src.has_thunder || [28,29,30].includes(code);
   const heavyRain = rain >= (s.rain_avoid_pct||80) || code===15;
   const modRain   = rain >= (s.rain_caution_pct||60);
   const highWind  = gusts >= mphToUnit(s.gust_avoid_mph||45, s.wind_unit||'mph');
@@ -5695,6 +5705,20 @@ function TravelPage() {
     // Filter timed events with location
     const timed = (cal?.events||[]).filter(e=>!e.allDay && e.start && !/travel.?prep/i.test(e.title||''));
     setEvents(timed); setLoading(false);
+
+    // v3.1: keep weather fresh on the Travel page. If the cached snapshot is older
+    // than stale_after (default 1h), re-fetch for the default location and re-render.
+    try {
+      const age = Date.now() - (_wxCache?.ts || 0);
+      if (!_wxCache?.data || _wxCache.data.error || age > getStaleMs(_wxSettings)) {
+        const { data: wlocs } = await supabase.from('weather_locations').select('*').eq('user_id', user.id).order('sort_order').order('name');
+        const wloc = (wlocs||[]).find(l => l.id === _wxSettings?.dashboard_location_id) || (wlocs||[])[0];
+        if (wloc) {
+          const wd = await fetchWeather(wloc.latitude, wloc.longitude, _wxSettings, wloc.name);
+          if (!wd.error) { _wxCache = { data:wd, locId:wloc.id, ts:Date.now() }; saveWxSnap(wd, wloc.id); setEvents(ev=>[...ev]); }
+        }
+      }
+    } catch(e) {}
   };
 
   const state = loadTravelState();
