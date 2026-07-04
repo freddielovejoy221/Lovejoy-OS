@@ -7275,11 +7275,32 @@ function DashboardPage({ user, onNavigate }) {
             const pr2 = allPresets.find(p=>p.name===s.preset_name)||allPresets[0];
             return acc + s.journey_mins + (pr2?.prep_buffer_mins||tsCfg.prep_buffer_mins) + (pr2?.pre_event_buffer_mins||tsCfg.pre_event_buffer_mins);
           }, 0);
+          // Proactive travel flags — deterministic, so the brief reliably surfaces what needs attention (next 48h)
+          const _k = d => new Date(d).toISOString().slice(0,10);
+          const _todayK = _k(Date.now()), _tmrK = _k(Date.now()+86400000);
+          const _when = iso => { const kk=_k(iso); return kk===_todayK?'today':kk===_tmrK?'tomorrow':new Date(iso).toLocaleDateString('en-GB',{weekday:'short'}); };
+          const _within48 = iso => { const h=(new Date(iso).getTime()-Date.now())/3600000; return h>=-1 && h<=48; };
+          const pressureToday    = calcTravelPressure(suggestions.filter(s=>_k(s.event_start)===_todayK));
+          const pressureTomorrow = calcTravelPressure(suggestions.filter(s=>_k(s.event_start)===_tmrK));
+          const proactive_flags = [];
+          suggestions.filter(s=>s.event_start && _within48(s.event_start)).forEach(s=>{
+            const when = _when(s.event_start);
+            if (s.event_location && s.journey_mins==null) proactive_flags.push(`No journey estimate for "${s.event_title}" (${when}) — auto-estimate available.`);
+            if (s.gap_label==='overloaded') proactive_flags.push(`Overloaded gap before "${s.event_title}" (${when}).`);
+            else if (s.gap_label==='tight') proactive_flags.push(`Tight gap before "${s.event_title}" (${when}).`);
+            const wx = calcWeatherTravelImpact(s.event_start, _wxCache?.data, _wxSettings);
+            if (wx.extraMins>0) proactive_flags.push(`${wx.reasons.join(' / ')} for "${s.event_title}" (${when}) — leave ${wx.extraMins} min earlier.`);
+            if (s.event_location && s.journey_mins!=null && s.block_status==='missing' && (s.kit_level==='kit-heavy' || s.requires_overnight))
+              proactive_flags.push(`Consider a travel/prep block for "${s.event_title}" (${when}).`);
+          });
+          if (pressureTomorrow==='overloaded' || pressureTomorrow==='tight') proactive_flags.unshift(`Tomorrow looks ${pressureTomorrow} for travel — plan ahead tonight.`);
+          const proactiveFlags = [...new Set(proactive_flags)].slice(0,6);
           travelContext = {
             planning_window: '48h',
             start_location:  tsCfg.default_start_name || 'Home',
-            travel_pressure_today:    calcTravelPressure(suggestions.filter(s=>s.event_start?.slice(0,10)===new Date().toISOString().slice(0,10))),
-            travel_pressure_tomorrow: calcTravelPressure(suggestions.filter(s=>s.event_start?.slice(0,10)===new Date(Date.now()+86400000).toISOString().slice(0,10))),
+            travel_pressure_today:    pressureToday,
+            travel_pressure_tomorrow: pressureTomorrow,
+            proactive_flags: proactiveFlags,
             suggestions,
             total_travel_time_hours: totalMins > 0 ? parseFloat((totalMins/60).toFixed(1)) : null,
             calculated_at: new Date().toISOString(),
