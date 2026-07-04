@@ -5603,6 +5603,7 @@ function TravelPage() {
   const [proposing,setProposing]= useState(null);
   const [pendingBlock,setPendingBlock] = useState(null);
   const [submitting, setSubmitting]   = useState(false); // prevents double-approve
+  const [etaBusy,    setEtaBusy]      = useState(null);   // event id currently auto-estimating
 
   // Stable fingerprint for duplicate detection — survives page reload via localStorage
   const travelIKey = (e, startTime, endTime) =>
@@ -5746,6 +5747,39 @@ function TravelPage() {
     saveTravelState(s);
     upsertTravelOverrideDB(userId, id, eventMeta, normalized); // non-blocking
     setEditId(null); setEvents(ev=>[...ev]);
+  };
+
+  // Auto-estimate journey time via the travel-eta Edge Function (Google Routes, cached server-side).
+  // Merges into the existing override so preset/profile choices are preserved. Fails soft.
+  const autoEstimate = async (e, sg) => {
+    const origin = sg.startLoc?.address || sg.startLoc?.name;
+    const dest   = e.location;
+    if (!origin || !dest) { alert('Need both a start location and a destination. Tap Edit to set the start.'); return; }
+    setEtaBusy(e.id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { alert('Please sign in again.'); setEtaBusy(null); return; }
+      const res = await fetch(SUPABASE_URL+'/functions/v1/travel-eta', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_KEY},
+        body: JSON.stringify({ origin, destination: dest, mode: sg.mode, departure_time: e.start }),
+      });
+      const j = await res.json().catch(()=>({}));
+      if (j?.journey_mins == null) {
+        alert('Could not auto-estimate right now — enter a time manually via Edit.');
+      } else {
+        const s = loadTravelState();
+        const prev = s.overrides[e.id] || {};
+        s.overrides[e.id] = { ...prev, journeyMins: j.journey_mins, journeySource:'auto' };
+        saveTravelState(s);
+        upsertTravelOverrideDB(userId, e.id, e, s.overrides[e.id]); // non-blocking
+        setEvents(ev=>[...ev]);
+      }
+    } catch(err) {
+      alert('Could not auto-estimate right now — enter a time manually via Edit.');
+    } finally {
+      setEtaBusy(null);
+    }
   };
 
   const proposeBlock = (e, sg, cfg) => {
@@ -5968,7 +6002,7 @@ function TravelPage() {
             )}
 
             <div className="meta" style={{marginBottom:8}}>
-              Journey: {jMins!=null ? '~'+jMins+' min (manual)' : 'unknown'} · Prep: {prep}m · Buffer: {pre}m
+              Journey: {jMins!=null ? '~'+jMins+' min ('+(state.overrides[e.id]?.journeySource==='auto'?'auto':'manual')+')' : 'unknown'} · Prep: {prep}m · Buffer: {pre}m
               {gapLabel==='comfortable'&&<span style={{color:'var(--accent)'}}> · Gap OK</span>}
             </div>
 
@@ -6035,6 +6069,13 @@ function TravelPage() {
               <button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(isEditing?null:e.id);setEditVals(state.overrides[e.id]||{});}}>
                 {isEditing?'Cancel edit':'Edit'}
               </button>
+              {e.location && (sg.startLoc?.address || sg.startLoc?.name) && (
+                <button className="btn btn-ghost btn-sm" disabled={etaBusy===e.id}
+                  onClick={()=>autoEstimate(e, sg)}
+                  title="Estimate journey time from your start location (Google Routes)">
+                  {etaBusy===e.id ? 'Estimating…' : '⚡ Auto-estimate'}
+                </button>
+              )}
               {state.createdBlocks?.[e.id] ? (
                 <span style={{fontSize:11,padding:'4px 8px',color:'var(--accent)',border:'1px solid var(--accent)',borderRadius:4}}>✓ Block added</span>
               ) : !isProposing ? (
