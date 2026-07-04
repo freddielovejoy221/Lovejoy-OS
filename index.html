@@ -5266,7 +5266,7 @@ function PrepItemLibraryPage() {
 
 // ── PREP CHECKLIST COMPONENT ──────────────────────────────────
 // Compact per-trip checklist inside TravelPage event cards
-function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync}) {
+function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync, weatherPrep}) {
   const getChecklist = () => {
     const s = loadTravelState();
     return s.checklists?.[eventId] || null;
@@ -5327,7 +5327,21 @@ function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync}) {
     persist(newCl);
   };
 
+  // Weather prep: stable id per suggestion text so re-adding is idempotent
+  const wxId = t => 'wx_' + t.toLowerCase().replace(/[^a-z0-9]+/g,'_').slice(0,40);
+  const addWeatherPrep = () => {
+    const base = cl || {items:[],custom:[],generated_at:new Date().toISOString()};
+    const have = new Set([...(base.items||[]), ...(base.custom||[])].map(x=>x.id));
+    const toAdd = (weatherPrep||[])
+      .map(t => ({id:wxId(t), name:'🌦 '+t, timing:'anytime', importance:'normal', done:false}))
+      .filter(x => !have.has(x.id));
+    if (!toAdd.length) return;
+    persist({...base, custom:[...(base.custom||[]), ...toAdd]});
+    setExpanded(true);
+  };
+
   const allItems = [...(cl?.items||[]), ...(cl?.custom||[])];
+  const wxPending = (weatherPrep||[]).filter(t => !allItems.find(x => x.id === wxId(t)));
   const doneCount = allItems.filter(x=>x.done).length;
   const total = allItems.length;
   const criticalPending = allItems.filter(x=>!x.done && x.importance==='critical');
@@ -5353,6 +5367,11 @@ function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync}) {
           <button className="btn btn-ghost btn-sm" style={{fontSize:10}} onClick={()=>{persist({items:[],custom:[],generated_at:new Date().toISOString()});setExpanded(true);}}>
             Start empty
           </button>
+          {weatherPrep?.length>0 && (
+            <button className="btn btn-ghost btn-sm" style={{fontSize:10,color:'var(--amber)'}} onClick={addWeatherPrep}>
+              🌦 Add weather prep ({weatherPrep.length})
+            </button>
+          )}
         </div>
       </div>
       {presetPrepItemIds?.length===0 && allPrepItems.length>0 && (
@@ -5370,6 +5389,9 @@ function PrepChecklist({eventId, presetPrepItemIds, allPrepItems, onSync}) {
           {nightBefore.length>0&&!expanded&&<span style={{fontSize:10,color:'var(--amber)'}}>🌙 {nightBefore.length} tonight</span>}
         </div>
         <div className="row" style={{gap:4}}>
+          {wxPending.length>0 && (
+            <button className="btn btn-ghost btn-sm" style={{fontSize:10,color:'var(--amber)'}} title="Add weather-driven prep items" onClick={addWeatherPrep}>🌦 +{wxPending.length}</button>
+          )}
           <button className="btn btn-ghost btn-sm" style={{fontSize:10}} onClick={()=>setExpanded(e=>!e)}>{expanded?'Collapse':'Checklist'}</button>
           <button className="btn btn-ghost btn-sm" style={{fontSize:10,color:'var(--muted)'}} title="Reset to preset" onClick={generateFromPreset}>↺</button>
         </div>
@@ -6154,6 +6176,7 @@ function TravelPage() {
               eventId={e.id}
               presetPrepItemIds={pr?.prep_item_ids||[]}
               allPrepItems={prepItems}
+              weatherPrep={wxImpact?.prep||[]}
               onSync={userId ? (cl)=>syncChecklistDB(userId, e.id, cl) : null}
             />
           </div>
