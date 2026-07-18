@@ -7530,6 +7530,179 @@ function DashboardPage({ user, onNavigate }) {
 }
 
 // ── ROOT APP ──────────────────────────────────────────────────
+function urlB64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function NotificationSettingsPage() {
+  const [perm, setPerm] = useState(typeof Notification!=='undefined' ? Notification.permission : 'unsupported');
+  const [sub, setSub] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [standalone, setStandalone] = useState(false);
+  const [userId, setUserId] = useState(null);
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const supported = ('serviceWorker' in navigator) && ('PushManager' in window) && (typeof Notification!=='undefined');
+
+  const deviceLabel = () => {
+    const ua = navigator.userAgent;
+    const os = /iphone|ipad|ipod/i.test(ua)?'iOS':/android/i.test(ua)?'Android':/mac/i.test(ua)?'macOS':/win/i.test(ua)?'Windows':'Device';
+    const br = /crios/i.test(ua)?'Chrome':/fxios/i.test(ua)?'Firefox':/edg/i.test(ua)?'Edge':/chrome/i.test(ua)?'Chrome':/safari/i.test(ua)?'Safari':'Browser';
+    return br+' on '+os;
+  };
+  const platform = () => isIOS?'ios':/android/i.test(navigator.userAgent)?'android':'web';
+
+  const nlog = (action, status, detail) => {
+    if (!userId) return;
+    supabase.from('helm_logs').insert({ user_id:userId, function_name:'notifications', action, status, error_detail: detail||null }).then(()=>{}).catch(()=>{});
+  };
+
+  const loadExisting = async (uid) => {
+    try {
+      if (!supported) return;
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing && uid) {
+        const { data } = await supabase.from('notification_subscriptions').select('*').eq('user_id', uid).eq('endpoint', existing.endpoint).maybeSingle();
+        if (data) setSub(data);
+      }
+    } catch(e){}
+  };
+
+  useEffect(() => {
+    (async () => {
+      const { data:{ user } } = await supabase.auth.getUser();
+      if (user) setUserId(user.id);
+      const sa = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+      setStandalone(sa);
+      if (user) loadExisting(user.id);
+    })();
+  }, []);
+
+  const enable = async () => {
+    setMsg(null);
+    if (!supported) { setMsg({kind:'err', text:'This browser does not support web push.'}); return; }
+    if (isIOS && !standalone) { setMsg({kind:'err', text:'On iPhone, open Lovejoy OS from the Home Screen icon first — a Safari tab can’t receive notifications.'}); return; }
+    setBusy(true);
+    try {
+      const p = await Notification.requestPermission();
+      setPerm(p);
+      nlog('permission_requested', p==='granted'?'success':'warning', 'permission='+p);
+      if (p !== 'granted') { setMsg({kind:'err', text:'Permission '+p+'. You may need to enable notifications for Lovejoy OS in your device settings.'}); setBusy(false); return; }
+      const reg = await navigator.serviceWorker.ready;
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlB64ToUint8Array(window.VAPID_PUBLIC_KEY),
+        });
+      }
+      const j = subscription.toJSON();
+      const { data:{ user } } = await supabase.auth.getUser();
+      const row = {
+        user_id: user.id, endpoint: subscription.endpoint,
+        p256dh: j.keys?.p256dh, auth: j.keys?.auth,
+        user_agent: navigator.userAgent.slice(0,300), device_label: deviceLabel(), platform: platform(),
+        enabled: true, last_seen_at: new Date().toISOString(), last_error: null, updated_at: new Date().toISOString(),
+      };
+      const { data, error } = await supabase.from('notification_subscriptions').upsert(row, { onConflict:'endpoint' }).select().maybeSingle();
+      if (error) throw error;
+      setSub(data); setMsg({kind:'ok', text:'This device is registered for notifications.'});
+      nlog('subscription_saved','success', null);
+    } catch(e) {
+      setMsg({kind:'err', text:'Could not enable: '+(e.message||e)});
+      nlog('subscription_saved','error', String(e).slice(0,300));
+    } finally { setBusy(false); }
+  };
+
+  const sendTest = async () => {
+    setMsg(null); setBusy(true);
+    try {
+      const { data:{ session } } = await supabase.auth.getSession();
+      const res = await fetch(SUPABASE_URL+'/functions/v1/send-notification', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_KEY},
+        body: JSON.stringify({ type:'test', title:'Lovejoy OS ⚓', body:'Test notification — if you can see this, notifications work.' }),
+      });
+      const j = await res.json().catch(()=>({}));
+      if (j.ok || j.sent) { setMsg({kind:'ok', text:'Test sent. Lock your phone and check — it can take a few seconds.'}); nlog('test_sent','success',null); loadExisting(userId); }
+      else { setMsg({kind:'err', text:'Test failed: '+(j.error||j.message||'unknown')}); nlog('test_sent','error', JSON.stringify(j).slice(0,300)); }
+    } catch(e){ setMsg({kind:'err', text:'Test failed — is the send-notification function deployed? ('+(e.message||e)+')'}); nlog('test_sent','error',String(e).slice(0,300)); }
+    finally { setBusy(false); }
+  };
+
+  const disable = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        await supabase.from('notification_subscriptions').update({ enabled:false, updated_at:new Date().toISOString() }).eq('endpoint', existing.endpoint);
+        await existing.unsubscribe().catch(()=>{});
+      }
+      setSub(null); setMsg({kind:'ok', text:'Notifications disabled on this device.'});
+    } catch(e){ setMsg({kind:'err', text:'Could not disable: '+(e.message||e)}); }
+    finally { setBusy(false); }
+  };
+
+  const fmt = t => t ? new Date(t).toLocaleString('en-GB',{timeZone:'Europe/London',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+  const permColour = perm==='granted'?'var(--accent)':perm==='denied'?'var(--red)':'var(--amber)';
+  const Row = ({label, value, colour}) => (
+    <div className="row" style={{justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid rgba(255,255,255,0.06)'}}>
+      <span className="meta">{label}</span>
+      <span style={{fontSize:13,fontWeight:600,color:colour||'var(--text)'}}>{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="page">
+      <h1 style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',marginBottom:4}}>🔔 Notifications</h1>
+      <div className="meta" style={{marginBottom:16}}>Prove reliable push on this device before moving real reminders in.</div>
+
+      {isIOS && !standalone && (
+        <div style={{background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:8,padding:'10px 12px',marginBottom:14,fontSize:12.5,color:'var(--amber)'}}>
+          ⚠ To receive notifications on iPhone, open Lovejoy OS from the <b>Home Screen app icon</b>. In Safari, tap Share → Add to Home Screen, then open from that icon.
+        </div>
+      )}
+
+      <div className="card" style={{marginBottom:14}}>
+        <Row label="Permission" value={perm} colour={permColour}/>
+        <Row label="Device registered" value={sub && sub.enabled ? 'Yes' : 'No'} colour={sub&&sub.enabled?'var(--accent)':'var(--muted)'}/>
+        <Row label="This device" value={deviceLabel()}/>
+        <Row label="Registered" value={fmt(sub?.last_seen_at)}/>
+        <Row label="Last test sent" value={fmt(sub?.last_test_sent_at)}/>
+        <Row label="Last error" value={sub?.last_error || '—'} colour={sub?.last_error?'var(--red)':'var(--muted)'}/>
+      </div>
+
+      {msg && (
+        <div style={{background:msg.kind==='ok'?'rgba(34,197,94,0.1)':'rgba(239,68,68,0.1)',border:'1px solid '+(msg.kind==='ok'?'rgba(34,197,94,0.3)':'rgba(239,68,68,0.3)'),borderRadius:8,padding:'9px 12px',marginBottom:14,fontSize:12.5,color:msg.kind==='ok'?'var(--accent)':'var(--red)'}}>{msg.text}</div>
+      )}
+
+      <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:18}}>
+        {(!sub || !sub.enabled) && <button className="btn btn-primary" disabled={busy} onClick={enable}>{busy?'Working…':'Enable notifications'}</button>}
+        {sub && sub.enabled && <button className="btn btn-primary" disabled={busy} onClick={sendTest}>{busy?'Working…':'Send test notification'}</button>}
+        {sub && sub.enabled && <button className="btn btn-ghost" disabled={busy} onClick={disable}>Disable on this device</button>}
+      </div>
+
+      <h3 style={{fontSize:14,fontWeight:700,marginBottom:8}}>iPhone test checklist</h3>
+      <div className="card" style={{fontSize:12.5,lineHeight:1.9}}>
+        1. Add Lovejoy OS to your Home Screen.<br/>
+        2. Open it from the Home Screen icon (full-screen, no address bar).<br/>
+        3. Tap <b>Enable notifications</b> and allow when prompted.<br/>
+        4. Tap <b>Send test notification</b>.<br/>
+        5. Lock your phone and wait a few seconds.<br/>
+        6. Confirm the notification appears, and tapping it opens Lovejoy OS.
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
@@ -7597,6 +7770,7 @@ function App() {
     { title:'Settings', accent:'#f59e0b', tint:'rgba(245,158,11,0.14)', tintB:'rgba(245,158,11,0.28)', items:[
       { id:'helmsettings',   label:ASSISTANT_NAME+' Settings', emoji:'⚙️', desc:'Tune how '+ASSISTANT_NAME+' works' },
       { id:'travelsettings', label:'Travel Settings',     emoji:'🧳', desc:'Defaults, buffers, locations' },
+      { id:'notifications',  label:'Notifications',       emoji:'🔔', desc:'Push reminders on this device' },
       { id:'prepitems',      label:'Prep Item Library',   emoji:'📦', desc:'Reusable packing items' },
     ]},
     { title:'System', accent:'#7b82a0', tint:'rgba(123,130,160,0.14)', tintB:'rgba(123,130,160,0.28)', items:[
@@ -7622,6 +7796,7 @@ function App() {
     if (page==='reviews')         return <ReviewsPage/>;
     if (page==='travel')         return <TravelPage/>;
     if (page==='travelsettings') return <TravelSettingsPage/>;
+    if (page==='notifications')  return <NotificationSettingsPage/>;
     if (page==='health')         return <HealthPage/>;
     if (page==='prepitems')      return <PrepItemLibraryPage/>;
     if (page==='roadmap')        return <RoadmapQueuePage/>;
@@ -7681,7 +7856,7 @@ function App() {
       </div>
       <div className="bottomnav">
         {navItems.map(item=>(
-          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','weathersettings','calendar','projects','backlog','areas','decisions','reviews','roadmap','systemhealth','features','debug'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
+          <button key={item.id} className={`nav-item ${page===item.id||(item.id==='more'&&['helmsettings','weathersettings','calendar','projects','backlog','areas','decisions','reviews','roadmap','systemhealth','features','debug','notifications','travelsettings','prepitems','security'].includes(page))?'active':''}`} onClick={()=>setPage(item.id)}>
             <Icon name={item.icon} size={22}/>
             <span>{item.label}</span>
           </button>
